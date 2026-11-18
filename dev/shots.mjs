@@ -1938,8 +1938,17 @@ const scenarios = [
       assert.equal(await t.file(path), fourth);
       assert.equal(await t.writes(), written);
 
-      // The day can't be left while that stands, by any road, and each try says why.
+      // Nor is a save so much as tried while the question is open: the file is not read, and the question is not put again.
       await t.page.click(".notice-dismiss");
+      const read = await reads();
+      await t.page.focus(".day-notes");
+      await t.page.keyboard.type(" x");
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1100)));
+      assert.equal(await reads(), read, "a save was tried while the question was open");
+      assert.equal(await t.problem(), null);
+      assert.equal((await question()).length, 1);
+
+      // The day can't be left while that stands, by any road, and each try says why.
       await t.page.keyboard.press("Escape");
       assert.equal(await t.text(".day h1"), "November 10");
       assert.equal(await t.problem(), HELD);
@@ -1953,7 +1962,7 @@ const scenarios = [
       await t.nav("Settings");
       assert.equal(await t.count(".day"), 1);
       assert.equal(await t.text(".day h1"), "November 10");
-      assert.ok((await t.notes()).endsWith("Typed after. And more."));
+      assert.ok((await t.notes()).endsWith("Typed after. And more. x"));
 
       // "Take the file's text", from the keyboard: the field holds what the file holds, and nothing was written.
       await t.page.focus('.day .table[aria-label="Notes"] .action');
@@ -2028,7 +2037,8 @@ const scenarios = [
     about: "a day file with values its habits can't hold, bookkeeping out of place and a long value: all of it shown, none of it changed unasked",
     async run(t) {
       const path = "days/2026-11-12.md";
-      const url = `https://example.com/${"a-long-path-with-no-spaces/".repeat(4)}end`;
+      // No spaces, hyphens or anything else a line could break at.
+      const url = `https://example.com/${"averylongpathwithnowheretobreak".repeat(4)}`;
       const odd = [
         "---", "date: 2026-11-13", "weight_lb: 182 lb", 'run: "yes"', "sleep_h: 7.1", "mood: [1, 2]", "hrv: null", "sleep_score: {a: 1}",
         "resting_hr: 47", `url: ${url}`, "tags: [travel, {a: 1}, sick]", "_sources:", "  sleep_h: intervals", "  url: manual", "  run: 5",
