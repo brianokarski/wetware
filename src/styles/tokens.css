@@ -1,0 +1,70 @@
+/*
+ * Wetware design tokens.
+ *
+ * Every color, typeface, size, space and rule weight in the app is defined
+ * here. Components and global.css only ever reference these variables, so the
+ * whole look can be restyled from this one file.
+ */
+
+:root {
+  /* ── Color: grayscale only. Habit dot colors live in habits.yaml. ── */
+  --color-ink: #000000;
+  --color-paper: #ffffff;
+  --color-gray: #9a9a9a; /* inactive nav, secondary text, placeholders */
+  --color-gray-light: #e4e4e4; /* future days, disabled, soft fills */
+  --color-rule: var(--color-ink);
+
+  /* ── Type: two voices ── */
+  --font-grotesk: "Inter Tight", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  --weight-grotesk: 700;
+  --weight-mono: 400;
+
+  /* Grotesk scale: huge for what matters, one body size for the rest. */
+  --size-display: 6rem; /* month name, today's date */
+  --size-headline: 2.5rem; /* screen titles, nav */
+  --size-title: 1.5rem; /* section heads, big values */
+  --size-body: 1rem; /* table text, inputs */
+
+  /* Mono scale: metadata only. */
+  --size-mono: 0.6875rem;
+
+  --leading-display: 0.95;
+  --leading-tight: 1;
+  --leading-body: 1.15;
+  --leading-mono: 1.4;
+
+  --tracking-display: -0.045em;
+  --tracking-headline: -0.035em;
+  --tracking-body: -0.015em;
+  --tracking-mono: 0;
+
+  /* ── Space ── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  --page-margin: var(--space-6);
+  --row-pad: var(--space-1); /* vertical padding inside a ruled row */
+
+  /* ── Grid ── */
+  --col-label: 14rem; /* key column of a key/value table */
+  --col-gutter: var(--space-6);
+  --measure: 60rem; /* max width of a ruled table */
+
+  /* ── Rules ── */
+  --rule-weight: 1px;
+  --rule: var(--rule-weight) solid var(--color-rule);
+  --focus-weight: 2px;
+
+  /* ── Shape: none. Kept as tokens so the "no" is explicit. ── */
+  --radius: 0;
+  --shadow: none;
+}
