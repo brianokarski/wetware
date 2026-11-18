@@ -15,6 +15,8 @@ interface Props {
   pagesGoal: number | null;
   /** Activities the last sync couldn't read because they came through Strava. */
   withheld: number;
+  /** Records the last sync couldn't use: no day or start it could read, or no type. */
+  unreadable: number;
   /** Asks intervals.icu for the last 90 days of activities. Rejects with what went wrong. */
   onTestConnection: () => Promise<ActivitySummary>;
   onChooseFolder: () => void;
@@ -52,7 +54,7 @@ export function Settings(props: Props) {
         </Table>
 
         <Table label="intervals.icu">
-          <IntervalsRows habits={props.habits} withheld={props.withheld} onTest={props.onTestConnection} />
+          <IntervalsRows habits={props.habits} withheld={props.withheld} unreadable={props.unreadable} onTest={props.onTestConnection} />
         </Table>
 
         {settings && (
@@ -224,7 +226,7 @@ function listed(names: string[]): string {
  * the user's own data, which is where the names for a habit's
  * `activity_types` come from.
  */
-function IntervalsRows(props: { habits: Habit[]; withheld: number; onTest: () => Promise<ActivitySummary> }) {
+function IntervalsRows(props: { habits: Habit[]; withheld: number; unreadable: number; onTest: () => Promise<ActivitySummary> }) {
   const [stored, setStored] = useState<boolean | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -258,6 +260,7 @@ function IntervalsRows(props: { habits: Habit[]; withheld: number; onTest: () =>
   const unset = habitsNotSetUp(props.habits).map((habit) => habit.name);
   // From the test if there has been one, else from the last sync.
   const withheld = summary ? summary.withheld : props.withheld;
+  const unreadable = summary ? summary.unreadable : props.unreadable;
 
   return (
     <>
@@ -315,7 +318,10 @@ function IntervalsRows(props: { habits: Habit[]; withheld: number; onTest: () =>
           <span role="status">
             {test.status === "running" && <span className="muted">Asking intervals.icu</span>}
             {test.status === "failed" && test.text}
-            {summary && (summary.total + summary.withheld > 0 ? "Connected" : `Connected. No activities in the last ${CONNECTION_TEST_DAYS} days.`)}
+            {summary &&
+              (summary.total + summary.withheld + summary.unreadable > 0
+                ? "Connected"
+                : `Connected. No activities in the last ${CONNECTION_TEST_DAYS} days.`)}
           </span>
         </Row>
       )}
@@ -345,6 +351,20 @@ function IntervalsRows(props: { habits: Habit[]; withheld: number; onTest: () =>
             <Mono muted>
               No activity types yet, so sync leaves {unset.length === 1 ? "it" : "them"} alone. In habits.yaml, list the types
               that count under source_rule / activity_types. Test connection shows the names in use.
+            </Mono>
+          </span>
+        </Row>
+      )}
+
+      {unreadable > 0 && (
+        <Row label="Unreadable">
+          <span>
+            {unreadable} {unreadable === 1 ? "record" : "records"} can't be read
+          </span>
+          <span className="row-note">
+            <Mono muted>
+              {unreadable === 1 ? "Its" : "Their"} date or type isn't in the form this app expects, so sync leaves{" "}
+              {unreadable === 1 ? "it" : "them"} out. If this is most of what intervals.icu has, the app needs fixing, not the data.
             </Mono>
           </span>
         </Row>

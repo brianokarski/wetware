@@ -5,7 +5,7 @@
  * API key and makes every network call.
  */
 import {
-  addDays, dateKey, localTimestamp, monthKey, monthOf, reason, writeDay,
+  addDays, dateKey, FolderChangedError, localTimestamp, monthKey, monthOf, reason, writeDay,
   type DataFs, type Habit, type Settings,
 } from "../data";
 import { readActivities, readWellness, summariseActivities, type ActivitySummary, type IntervalsData } from "./intervals";
@@ -41,7 +41,11 @@ export interface SyncReport {
   unreadable: number;
   /** Days that had something to write and whose file couldn't take it. */
   unwritten: { date: string; reason: string }[];
-  /** The sync was called off part-way (`SyncJob.stillWanted`): the days after the last one changed were not looked at. */
+  /**
+   * The data folder was changed while the sync ran, and the shell refused
+   * it any further access: the days after the last one changed were not
+   * touched. What it found belongs to a folder that is no longer open.
+   */
   stopped: boolean;
 }
 
@@ -101,12 +105,6 @@ export interface SyncJob {
   settings: Settings;
   /** The moment the sync runs: it decides what "today" is and what `_synced_at` says. */
   now: Date;
-  /**
-   * Asked before each day file is touched. Once it says no, nothing more is
-   * read or written: the data folder is being changed under the sync, and
-   * what it fetched belongs to the folder it started on.
-   */
-  stillWanted?: () => boolean;
 }
 
 /**
@@ -114,7 +112,7 @@ export interface SyncJob {
  * set up without holding back the other. Never rejects for anything a source
  * or a day file does; the report says what happened.
  */
-export async function runSync({ fs, sources, habits, settings, now, stillWanted }: SyncJob): Promise<SyncReport> {
+export async function runSync({ fs, sources, habits, settings, now }: SyncJob): Promise<SyncReport> {
   const range = syncRange(dateKey(now));
   const syncedAt = localTimestamp(now);
   const [intervals, weather] = await Promise.all([
@@ -126,10 +124,6 @@ export async function runSync({ fs, sources, habits, settings, now, stillWanted 
   const unwritten: SyncReport["unwritten"] = [];
   let stopped = false;
   for (const [date, wants] of mergeWants(intervals.wants, weather.wants)) {
-    if (stillWanted && !stillWanted()) {
-      stopped = true;
-      break;
-    }
     let wrote = false;
     try {
       // The patch is worked out against the file as it is when its turn comes, so an edit made meanwhile is seen.
@@ -140,6 +134,11 @@ export async function runSync({ fs, sources, habits, settings, now, stillWanted 
       });
       if (wrote) changed.push(date);
     } catch (e) {
+      // The folder this sync was for is gone from under it. The rest of what it has is for nowhere.
+      if (e instanceof FolderChangedError) {
+        stopped = true;
+        break;
+      }
       unwritten.push({ date, reason: reason(e) });
     }
   }

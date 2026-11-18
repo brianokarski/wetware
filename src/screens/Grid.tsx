@@ -74,6 +74,8 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
   const refocus = useRef(false);
   /** The month the grid last began loading, to tell a change of month from a sync landing. */
   const loading = useRef("");
+  /** How many cells have been set so far, and for each date the count as it stood at its latest. */
+  const edits = useRef({ count: 0, at: new Map<string, number>() });
 
   const dates = monthDates(month);
   const rows = habits.filter((habit) => !habit.archived);
@@ -92,15 +94,21 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
       setDays(null);
       setEditing(null);
     }
+    const began = edits.current.count;
     loadMonth(fs, month).then(
       (loaded) => {
         if (stale) return;
-        // A day with an edit on its way to disk keeps what it shows: that write's own result follows.
+        // Two kinds of day keep what they show, since what was just read may be older than it:
+        // one with an edit still on its way to disk, whose own result follows, and one edited
+        // since this reading began, whose result is already on screen.
         const pending = (date: string) => (inFlight.current.get(date) ?? 0) > 0;
+        const editedSince = (date: string) => (edits.current.at.get(date) ?? 0) > began;
         setDays((shown) =>
           fresh || !shown
             ? loaded
-            : Object.fromEntries(Object.entries(loaded).map(([date, day]) => [date, pending(date) ? (shown[date] ?? day) : day])),
+            : Object.fromEntries(
+                Object.entries(loaded).map(([date, day]) => [date, pending(date) || editedSince(date) ? (shown[date] ?? day) : day]),
+              ),
         );
         // The month is here, and so is every day in it that could be read.
         const readable = Object.values(loaded).filter((day) => !day.error);
@@ -149,6 +157,7 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
     const show = (day: Day) => setDays((shown) => (shown && date in shown ? { ...shown, [date]: day } : shown));
     show(withPatch(before, cellPatch(habit, value)));
 
+    edits.current.at.set(date, ++edits.current.count);
     const count = inFlight.current;
     count.set(date, (count.get(date) ?? 0) + 1);
     const landed = () => {

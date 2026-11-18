@@ -1,23 +1,54 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DataFs } from "../data";
+import { FolderChangedError, type DataFs } from "../data";
 import { asProblem, SyncFailure, type SyncSources } from "../sync";
 
-/** File access, scoped by the Rust shell to the chosen data folder. */
-export const tauriFs: DataFs = {
-  read: (path) => invoke<string | null>("data_read", { path }),
-  write: (path, contents) => invoke<void>("data_write", { path, contents }),
-  list: (dir) => invoke<string[]>("data_list", { dir }),
-};
+/** A folder the shell has opened as the data folder, and the number it gave that opening. */
+export interface OpenFolder {
+  path: string;
+  id: number;
+}
 
-export const getDataRoot = () => invoke<string | null>("get_data_root");
+/** What the shell refuses a command with when the folder it was for is no longer the one open. */
+const FOLDER_CHANGED = "The data folder was changed";
+
+const guarded = <T>(call: Promise<T>): Promise<T> =>
+  call.catch((e: unknown) => {
+    throw e === FOLDER_CHANGED ? new FolderChangedError() : e;
+  });
+
+const opened = new Map<number, DataFs>();
+
+/**
+ * File access to one opening of the data folder. Every read and write carries
+ * that opening's number, and the shell refuses it (`FolderChangedError`) once
+ * another folder has been opened: nothing worked out for one folder can land
+ * in another. The same number always gives the same object, so edits to one
+ * file queue up behind each other.
+ */
+export function folderFs(folder: number): DataFs {
+  let fs = opened.get(folder);
+  if (!fs) {
+    fs = {
+      read: (path) => guarded(invoke<string | null>("data_read", { folder, path })),
+      write: (path, contents) => guarded(invoke<void>("data_write", { folder, path, contents })),
+      list: (dir) => guarded(invoke<string[]>("data_list", { folder, dir })),
+    };
+    opened.set(folder, fs);
+  }
+  return fs;
+}
+
+/** The folder now open, or null if none has been chosen yet. */
+export const getDataRoot = () => invoke<OpenFolder | null>("get_data_root");
 
 /**
  * The webview can't name a data folder. It can ask the shell to show the
  * native folder picker, or to use the suggested folder; either way the shell
- * sets the folder itself and reports the path. Null if the picker was cancelled.
+ * opens the folder itself and reports it. Null if the picker was cancelled:
+ * then nothing has changed.
  */
-export const chooseDataRoot = () => invoke<string | null>("choose_data_root");
-export const adoptSuggestedDataRoot = () => invoke<string>("use_suggested_data_root");
+export const chooseDataRoot = () => invoke<OpenFolder | null>("choose_data_root");
+export const adoptSuggestedDataRoot = () => invoke<OpenFolder>("use_suggested_data_root");
 /** `~/Documents/Wetware Data`, spelled out. For display only. */
 export const suggestedDataRoot = () => invoke<string>("suggested_data_root");
 
@@ -53,7 +84,8 @@ export interface SyncState {
   intervals_hint_shown: boolean;
 }
 
-export const syncState = {
-  get: () => invoke<SyncState>("sync_state_get"),
-  set: (state: SyncState) => invoke<void>("sync_state_set", { state }),
-};
+/** The sync record of one opening of the data folder. Refused, like file access, once another is open. */
+export const syncStateOf = (folder: number) => ({
+  get: () => guarded(invoke<SyncState>("sync_state_get", { folder })),
+  set: (state: SyncState) => guarded(invoke<void>("sync_state_set", { folder, state })),
+});

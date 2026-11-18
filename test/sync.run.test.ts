@@ -1,7 +1,7 @@
 /** A whole sync against the fixture data folder: what lands in the day files, and what is left alone. */
 import { describe, expect, it } from "vitest";
 import {
-  cellState, DEFAULT_SETTINGS, loadHabits, loadMonth, loadSettings, localTimestamp, memoryFs, readDay, SEED_HABITS,
+  cellState, DEFAULT_SETTINGS, FolderChangedError, loadHabits, loadMonth, loadSettings, localTimestamp, memoryFs, readDay, SEED_HABITS,
   writeCell, type DataFs, type Settings,
 } from "../src/data";
 import { runSync, syncRange, testConnection, type SyncJob } from "../src/sync";
@@ -429,27 +429,52 @@ describe("a day file that can't take the change", () => {
   });
 });
 
-describe("a sync that is called off", () => {
-  it("touches no file after it is told to stop", async () => {
-    const fs = folderFs();
-    const before = new Map(fs.files);
-    let wanted = true;
-    const stopping: DataFs = { ...fs, write: async (p, text) => (await fs.write(p, text), void (wanted = !p.includes("2026-10-27"))) };
-    const report = await runSync(await job(stopping, { stillWanted: () => wanted }));
+describe("a sync whose data folder is changed under it", () => {
+  /** An fs the shell stops serving once `gone` is set: as when another folder has been opened. */
+  function leavable(inner: DataFs) {
+    const state = { gone: false, refused: 0 };
+    const refuse = () => {
+      state.refused++;
+      return Promise.reject(new FolderChangedError());
+    };
+    const fs: DataFs = {
+      read: (p) => (state.gone ? refuse() : inner.read(p)),
+      write: (p, text) => (state.gone ? refuse() : inner.write(p, text)),
+      list: (dir) => (state.gone ? refuse() : inner.list(dir)),
+    };
+    return { fs, state };
+  }
+
+  it("stops at the first refusal, and says it was stopped rather than that files were left alone", async () => {
+    const inner = folderFs();
+    const before = new Map(inner.files);
+    const { fs, state } = leavable(inner);
+    const habits = await loadHabits(fs);
+    const settings = await loadSettings(fs);
+    const watching: DataFs = { ...fs, write: async (p, text) => (await fs.write(p, text), void (state.gone = p.includes("2026-10-27"))) };
+    const report = await runSync({ fs: watching, sources: fakeSources(), habits, settings, now: NOW });
     expect(report.stopped).toBe(true);
     expect(report.changed).toEqual(["2026-10-25", "2026-10-26", "2026-10-27"]);
-    for (const [file, text] of fs.files) {
+    expect(report.unwritten).toEqual([]);
+    // It asked once more, was refused, and asked for nothing after that.
+    expect(state.refused).toBe(1);
+    for (const [file, text] of inner.files) {
       if (!report.changed.includes(file.slice(5, 15))) expect(text, file).toBe(before.get(file));
     }
-    expect(fs.files.size).toBe(before.size + 3);
+    expect(inner.files.size).toBe(before.size + 3);
+  });
 
-    // Called off before it began: nothing is read or written at all.
-    const untouched = folderFs();
-    const reads: string[] = [];
-    const watching: DataFs = { ...untouched, read: (p) => (reads.push(p), untouched.read(p)) };
-    const none = await runSync({ fs: watching, sources: fakeSources(), habits: SEED_HABITS, settings: DEFAULT_SETTINGS, now: NOW, stillWanted: () => false });
-    expect(none).toMatchObject({ stopped: true, changed: [], unwritten: [] });
-    expect(reads).toEqual([]);
+  it("writes nothing at all if the folder was gone before its first write", async () => {
+    const inner = folderFs();
+    const before = new Map(inner.files);
+    const { fs, state } = leavable(inner);
+    const habits = await loadHabits(fs);
+    const settings = await loadSettings(fs);
+    state.gone = true;
+    const report = await runSync({ fs, sources: fakeSources(), habits, settings, now: NOW });
+    expect(report).toMatchObject({ stopped: true, changed: [], unwritten: [] });
+    expect(state.refused).toBe(1);
+    expect(new Map(inner.files)).toEqual(before);
     expect((await runSync(await job(folderFs()))).stopped).toBe(false);
   });
 });

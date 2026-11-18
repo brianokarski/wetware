@@ -1120,15 +1120,25 @@ const scenarios = [
       assert.doesNotMatch(await t.file(TODAY_FILE), /^run:/m);
       await t.shot();
 
-      // With the weather out of reach as well, nothing was reached: the last-synced time stays what it was.
-      await t.page.evaluate(() => window.wetware.failWeather({ kind: "offline" }));
+      // Later, with the weather out of reach as well, nothing is reached: the last-synced time stays what it was.
+      await t.page.evaluate(() => {
+        window.wetware.setTime(10, 5);
+        window.wetware.failWeather({ kind: "offline" });
+      });
       await t.page.click(".month .action");
       await t.told(`Sync: ${KEY_REJECTED} Open-Meteo could not be reached. Check the internet connection, then try again.`);
       assert.equal(await t.syncStatus(), "Last synced 09:41");
+      assert.equal((await t.syncState()).last_synced_ms, new Date(2026, 10, 17, 9, 41).getTime());
+      // A source that limits requests: the wait it asked for is the wait that is said.
       await t.page.evaluate(() => window.wetware.failWeather({ kind: "rate_limited", retry_after_secs: 3600 }));
       await t.page.click(".month .action");
-      await t.told("Open-Meteo is limiting requests. Try again in a few minutes.");
+      await t.told("Open-Meteo is limiting requests. Try again in about an hour.");
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      // A sync that does reach one moves it on.
       await t.page.evaluate(() => window.wetware.failWeather(null));
+      await t.page.click(".month .action");
+      await t.told(`Sync: nothing new. ${KEY_REJECTED}`);
+      assert.equal(await t.syncStatus(), "Last synced 10:05");
 
       // Settings says the same of the key when asked to test it. A new key is accepted.
       await t.nav("Settings");
@@ -1152,41 +1162,190 @@ const scenarios = [
       await t.told("Sync: 11 days updated.");
       await t.stateIs("run", 17, "done");
       assert.equal(await t.problem(), "Sync: 11 days updated.");
+
+      // Both sources failing the same way is said once, for both.
+      await t.page.evaluate(() => {
+        window.wetware.failIntervals({ kind: "offline" });
+        window.wetware.failWeather({ kind: "offline" });
+      });
+      await t.page.click(".month .action");
+      await t.told("could not be reached");
+      assert.equal(await t.problem(), "Sync: intervals.icu and Open-Meteo could not be reached. Check the internet connection, then try again.");
     },
   },
   {
-    name: "sync-called-off",
-    about: "changing the data folder calls off a sync under way: what it fetched is not written into the new folder",
+    name: "sync-folder-change",
+    about: "a sync goes on if the folder picker is cancelled, and stops, writing nowhere, when another folder is opened",
     query: "sync=fixture&key=stored",
     async run(t) {
       await t.told("Sync: 24 days updated.");
-      // Something for a sync to put back, and fetches slow enough to change folders in the middle of one.
+      const first = (await t.fetches()).length;
+
+      // The picker opened and cancelled in the middle of a sync: the sync is left alone and finishes.
       await t.page.evaluate(() => {
         window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
         window.wetware.slowFetches(400);
+        window.wetware.pick("cancel");
       });
       await t.page.click(".month .action");
       await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Syncing");
       await t.nav("Settings");
-      await t.page.evaluate(() => window.wetware.slowFetches(0));
-      await t.page.click(".row-value .action"); // Choose: the shell switches to another folder
-      // The sync for the folder now open runs once the old one has wound down, and it is the one that writes.
-      await t.page.waitForFunction(() => window.wetware.fetches().length === 9);
-      await t.page.waitForFunction(() => /^run: true$/m.test(window.wetware.read("days/2026-11-17.md")));
-      const calls = await t.page.evaluate(() => window.wetware.calls());
-      const isFetch = (call) => call === "intervals_fetch" || call === "weather_fetch";
-      const chosen = calls.lastIndexOf("choose_data_root");
-      const fetches = calls.map((call, i) => (isFetch(call) ? i : -1)).filter((i) => i >= 0);
-      assert.equal(fetches.length, 9);
-      const newSync = fetches[6];
-      assert.ok(newSync > chosen, "the new folder's sync began before the folder was chosen");
-      const strays = calls.slice(chosen, newSync).filter((call) => call === "data_write");
-      assert.deepEqual(strays, [], "the sync that was called off wrote to the new folder");
-      assert.ok(calls.slice(newSync).includes("data_write"), "the new folder's sync wrote nothing");
+      await t.page.click(".row-value .action"); // Choose, then Cancel
+      await t.page.waitForFunction(() => window.wetware.calls().includes("choose_data_root"));
+      assert.doesNotMatch(await t.file(TODAY_FILE), /^run:/m, "the sync had finished before the picker was opened");
+      await t.told("Sync: 1 day updated.");
+      assert.match(await t.file(TODAY_FILE), /^run: true$/m);
+      assert.equal((await t.fetches()).length, first + 3);
+      assert.deepEqual(await t.page.evaluate(() => window.wetware.refused()), []);
+      assert.equal(await t.page.evaluate(() => window.wetware.root()), "/Users/preview/Documents/Wetware Data");
       await t.nav("Month");
       await t.ready();
       await t.stateIs("run", 17, "done");
       assert.equal(await t.syncStatus(), "Last synced 09:41");
+      assert.equal(await t.problem(), "Sync: 1 day updated.");
+
+      // Another folder opened in the middle of a sync's writes. Every day has something to write, slowly.
+      await t.page.evaluate(() => {
+        for (const path of window.wetware.paths().filter((p) => p.startsWith("days/"))) {
+          window.wetware.write(path, window.wetware.read(path).replace(/^weather_high_f: .*$/m, "weather_high_f: 0"));
+        }
+        window.wetware.slowFetches(0);
+        window.wetware.slowWrite("*", 60);
+        window.wetware.pick("other");
+      });
+      const written = () => t.page.evaluate(() => window.wetware.pathsIn("suggested").filter((p) => p.startsWith("days/") && !/^weather_high_f: 0$/m.test(window.wetware.readIn("suggested", p))).length);
+      const before = await t.page.evaluate(() => window.wetware.writes().length);
+      const pristine = await t.page.evaluate(() => window.wetware.pathsIn("other").map((p) => [p, window.wetware.readIn("other", p)]));
+      await t.page.click(".month .action");
+      await t.page.waitForFunction((n) => window.wetware.writes().length >= n + 3, {}, before);
+      await t.nav("Settings");
+      await t.page.click(".row-value .action"); // Choose: the shell opens the other folder
+      await t.page.waitForFunction(() => window.wetware.root() === "/Users/preview/Elsewhere/Wetware");
+      // The sync stops at the next thing it asks the shell for. A write let through before the change may still land.
+      await t.page.waitForFunction(() => window.wetware.refused().length > 0);
+      await t.saved();
+      await t.saved();
+      const left = await written();
+      assert.ok(left >= 3 && left < 24, `${left} of 24 days were written to the folder that was left`);
+      assert.deepEqual(await t.page.evaluate(() => window.wetware.refused()), ["data_read"]);
+
+      // The folder that was opened is then synced for itself, and is the only thing written from here on.
+      await t.page.evaluate(() => window.wetware.slowWrite("*", null));
+      await t.told("Sync: 24 days updated.");
+      assert.equal(await written(), left, "the folder that was left was written to after it was left");
+      const writes = await t.page.evaluate(() => window.wetware.writes());
+      const opened = Math.max(...writes.map((write) => write.folder));
+      for (const write of writes.slice(before)) {
+        const where = write.folder === opened ? "/Users/preview/Elsewhere/Wetware" : "/Users/preview/Documents/Wetware Data";
+        assert.equal(write.root, where, `${write.path}, worked out for folder ${write.folder}, landed in ${write.root}`);
+      }
+      const inOther = writes.filter((write) => write.root === "/Users/preview/Elsewhere/Wetware");
+      assert.equal(inOther.length, 24);
+      assert.ok(inOther.every((write) => write.folder === opened), "the sync of the folder that was left wrote into the one that was opened");
+      // What landed there is its own sync's work on its own files: the fixture as it was, plus that sync.
+      const was = new Map(pristine);
+      assert.match(was.get(TODAY_FILE), /^sleep_h: 7\.7$/m);
+      assert.doesNotMatch(was.get(TODAY_FILE), /^run:/m);
+      assert.match(await t.file(TODAY_FILE), /^run: true$/m);
+      assert.doesNotMatch(await t.file("days/2026-11-10.md"), /^weather_high_f: 0$/m);
+      assert.equal((await t.syncState()).last_synced_ms, new Date(2026, 10, 17, 9, 41).getTime());
+      await t.nav("Month");
+      await t.ready();
+      await t.stateIs("run", 17, "done");
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      assert.equal(await t.problem(), "Sync: 24 days updated.");
+    },
+  },
+  {
+    name: "sync-reread",
+    about: "an edit made while the month is read again after a sync stays on screen, and so does one still on its way to disk",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      await t.told("Sync: 24 days updated.");
+      await t.stateIs("run", 17, "done");
+
+      // The month's re-read is held up by one slow file, a day ahead that sync doesn't touch.
+      await t.page.evaluate(() => {
+        window.wetware.write("days/2026-11-20.md", "---\ndate: 2026-11-20\n---\n");
+        window.wetware.slowRead("days/2026-11-20.md", 700);
+        window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
+      });
+      await t.page.click(".month .action");
+      await t.told("Sync: 1 day updated.");
+      // The sync is done and its result not yet on screen: the re-read is under way. An edit made now...
+      assert.equal(await t.state("meditate", 16), "done");
+      await t.click("meditate", 16);
+      await t.saved();
+      assert.match(await t.file("days/2026-11-16.md"), /^meditate: false$/m);
+      assert.equal(await t.state("meditate", 16), "missed");
+      // ...is still what the screen shows once the re-read lands, along with what the sync wrote.
+      await t.stateIs("run", 17, "done");
+      assert.equal(await t.state("meditate", 16), "missed", "the re-read put back what was on disk before the edit");
+      await t.page.evaluate(() => window.wetware.slowRead("days/2026-11-20.md", null));
+
+      // An edit still on its way to disk when the re-read lands. October: the days before the 25th are outside
+      // what sync looks at, so the edit's file is not one the sync waits its turn for.
+      await t.page.click(".month-nav button:first-child");
+      await t.ready();
+      await t.page.evaluate(() => {
+        window.wetware.write("days/2026-10-30.md", window.wetware.read("days/2026-10-30.md").replace("hrv: 65\n", ""));
+        window.wetware.slowFetches(300);
+        window.wetware.slowWrite("days/2026-10-10.md", 1200);
+      });
+      const lists = () => t.page.evaluate(() => window.wetware.calls().filter((call) => call === "data_list").length);
+      const listed = await lists();
+      await t.page.click(".month .action");
+      await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Syncing");
+      await t.click("meditate", 10);
+      assert.equal(await t.state("meditate", 10), "done");
+      await t.told("Sync: 1 day updated.");
+      await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_list").length > n, {}, listed);
+      await t.saved();
+      // The month has been read again, without the file the edit hasn't made yet. The tick is still there.
+      assert.equal(await t.file("days/2026-10-10.md"), null, "the edit had already reached the disk");
+      assert.equal(await t.state("meditate", 10), "done", "the re-read took away an edit still on its way to disk");
+      assert.match(await t.file("days/2026-10-30.md"), /^hrv: 65$/m);
+      await t.page.waitForFunction(() => window.wetware.read("days/2026-10-10.md") !== null);
+      await t.saved();
+      assert.equal(await t.state("meditate", 10), "done");
+      assert.equal(await t.file("days/2026-10-10.md"), "---\ndate: 2026-10-10\nmeditate: true\n_sources:\n  meditate: manual\n---\n");
+    },
+  },
+  {
+    name: "sync-left-alone",
+    about: "day files a sync can't change are each named, with the reason, and a read-only one is called that",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      await t.told("Sync: 24 days updated.");
+      // A key written twice on the 5th, a 6th that isn't text, and a 10th that is read-only and has something to write.
+      const tenth = (await t.file("days/2026-11-10.md")).replace(/^weather_high_f: .*$/m, "weather_high_f: 0");
+      await t.page.evaluate((text) => {
+        window.wetware.write("days/2026-11-05.md", window.wetware.read("days/2026-11-05.md").replace("mood: 4\n", "mood: 4\nmood: 5\n"));
+        window.wetware.failRead("days/2026-11-06.md", "stream did not contain valid UTF-8");
+        window.wetware.write("days/2026-11-10.md", text);
+        window.wetware.failWrite("days/2026-11-10.md", "2026-11-10.md is read-only, so it was not changed");
+      }, tenth);
+      const fifth = await t.file("days/2026-11-05.md");
+      await t.page.click(".month .action");
+      await t.told("left as it is");
+      const line = 1 + fifth.split("\n").indexOf("mood: 5");
+      const said =
+        `Sync: nothing new. days/2026-11-05.md left as it is: Frontmatter: Invalid YAML: Map keys must be unique (line ${line}). ` +
+        "days/2026-11-06.md left as it is: stream did not contain valid UTF-8. " +
+        "days/2026-11-10.md is read-only, so it was left as it is. Unlock it in Finder (Get Info), then sync again.";
+      assert.equal(await t.problem(), said);
+      // The line is cut short on screen; all of it is in its tooltip.
+      assert.equal(await t.page.$eval(".notice", (el) => el.title), said);
+      assert.equal(await t.file("days/2026-11-05.md"), fifth);
+      assert.equal(await t.file("days/2026-11-10.md"), tenth);
+      await t.shot();
+
+      // Unlocked, the read-only file is written by the next sync, and the message no longer names it.
+      await t.page.evaluate(() => window.wetware.failWrite("days/2026-11-10.md", null));
+      await t.page.click(".month .action");
+      await t.told("Sync: 1 day updated.");
+      assert.doesNotMatch(await t.problem(), /2026-11-10/);
+      assert.match(await t.file("days/2026-11-10.md"), /^weather_high_f: 41$/m);
     },
   },
   {
@@ -1217,6 +1376,28 @@ const scenarios = [
       assert.equal((await t.fetches()).at(-1), "activities 2026-08-19 2026-11-17");
       assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
       await t.shot();
+
+      // If intervals.icu wrote its dates another way, the types are still listed, and the count says something is wrong.
+      assert.equal(await t.row("Unreadable"), null);
+      await t.page.evaluate(() => window.wetware.oddStarts(true));
+      await t.action("Test connection");
+      await t.page.waitForFunction(() => [...document.querySelectorAll(".row")].some((row) => row.firstElementChild.textContent === "Unreadable"));
+      assert.equal(await t.row("Activity types"), "Run 12, WeightTraining 5, RockClimbing 2, Walk 1");
+      assert.equal(await t.row("Unreadable"), "20 records can't be read");
+      assert.equal(await t.row("Connection"), "Connected");
+      await t.shot("settings-unreadable");
+      // And a sync says how many it left out, rather than "nothing new" and no more.
+      await t.nav("Month");
+      await t.ready();
+      await t.page.click(".month .action");
+      await t.told("could not be read");
+      assert.match(await t.problem(), /20 records from intervals\.icu could not be read and were left out\.$/);
+      await t.page.evaluate(() => window.wetware.oddStarts(false));
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="intervals.icu API key"]');
+      assert.equal(await t.row("Unreadable"), "20 records can't be read"); // from the sync that just ran
+      await t.action("Test connection");
+      await t.page.waitForFunction(() => ![...document.querySelectorAll(".row")].some((row) => row.firstElementChild.textContent === "Unreadable"));
 
       // A key that is saved goes to the shell and is nowhere in the page, the data folder or the sync record after.
       const secret = "preview-key-9f3a";

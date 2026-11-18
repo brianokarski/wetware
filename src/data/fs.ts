@@ -12,6 +12,18 @@ export interface DataFs {
   list(dir: string): Promise<string[]>;
 }
 
+/**
+ * The data folder this `DataFs` was for is no longer the one open, and the
+ * shell has refused the read or write. Nothing was touched. Work that was
+ * under way for that folder has nowhere to go and should stop.
+ */
+export class FolderChangedError extends Error {
+  constructor() {
+    super("The data folder was changed");
+    this.name = "FolderChangedError";
+  }
+}
+
 export function memoryFs(initial: Record<string, string> = {}): DataFs & {
   files: Map<string, string>;
 } {
