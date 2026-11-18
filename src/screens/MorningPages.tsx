@@ -63,12 +63,10 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
   const [byHand, setByHand] = useState<string | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
 
-  /** The file's text that what is in the field was typed from. */
-  const from = useRef("");
-  /** The text of a save under way. */
-  const saving = useRef<string | null>(null);
-  /** A save was asked for while one was under way. It runs when that one is done. */
-  const again = useRef(false);
+  /** What the file is known to hold: what was last read from it or written to it. Saves are checked against it, and move it on. */
+  const base = useRef({ text: "" }).current;
+  /** The text of the last save asked for, while it is on its way or has landed. Null once it has failed. */
+  const asking = useRef<string | null>(null);
   /** The text is on disk and its count is not: the next save has the count to write. */
   const uncounted = useRef(false);
   /** What this render has, for the saves and checks that run after it. */
@@ -105,7 +103,7 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
     readPages(fs, date).then(
       (onDisk) => {
         if (stale) return;
-        from.current = onDisk;
+        base.text = onDisk;
         setText(onDisk);
         setStage("ready");
       },
@@ -123,56 +121,39 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
       // That the file can't be read is about this room. Out of it, there is nothing left to say.
       if (unread) settle(key);
     };
-  }, [fs, date, file, key, notify, settle, readCount]);
+  }, [fs, date, base, file, key, notify, settle, readCount]);
 
   const save = useCallback(() => {
     const { stage, text, asked } = latest.current;
-    // Nothing is saved while the question is open, and nothing that is already saved.
-    if (stage !== "ready" || asked || (text === from.current && !uncounted.current)) return;
-    // One save at a time: each is written over what the one before it wrote.
-    if (saving.current !== null) {
-      again.current = text !== saving.current;
-      return;
-    }
-    saving.current = text;
-    const done = () => {
-      saving.current = null;
-      if (again.current) {
-        again.current = false;
-        save();
-      }
-    };
-    savePages(fs, date, text, from.current, habit).then(
+    // Nothing is saved while the question is open.
+    if (stage !== "ready" || asked) return;
+    // Nor what is already saved, or already on its way.
+    if (text === (asking.current ?? base.text) && !uncounted.current) return;
+    asking.current = text;
+    // It takes its turn at once, behind any save still on its way, and is checked against what that one wrote.
+    savePages(fs, date, text, base, habit).then(
       (saved) => {
-        from.current = text;
         uncounted.current = false;
         settle(key);
         if (saved.count === "by_hand") void readCount().then(setByHand, () => {});
         else setByHand(null);
-        done();
       },
       (e) => {
+        // Whatever went wrong, this text can be asked for again.
+        if (asking.current === text) asking.current = null;
         if (e instanceof PagesChangedError) {
-          again.current = false;
-          saving.current = null;
           ask();
-          return;
-        }
-        if (e instanceof PagesCountError) {
+        } else if (e instanceof PagesCountError) {
           // The text is on disk. The count is tried again with the next save.
-          from.current = text;
           uncounted.current = true;
           notify(key, `The pages are saved. ${reason(e)}`);
         } else {
           // Not on disk: the next save, on the next keystroke or on leaving, tries again.
           notify(key, `The pages for ${monthAndDay(date)} were not saved. ${reason(e)}`);
         }
-        // A save that was waiting on this one has the same trouble ahead of it. It waits for the next keystroke.
-        again.current = false;
-        saving.current = null;
       },
     );
-  }, [fs, date, habit, key, notify, settle, ask, readCount]);
+  }, [fs, date, habit, base, key, notify, settle, ask, readCount]);
   const saver = useAutosave(save);
 
   // The file may have been changed in another app while this one was in the background. Coming back to
@@ -182,17 +163,20 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
       if (latest.current.stage !== "ready") return;
       readPages(fs, date).then(
         (onDisk) => {
+          // This reading took its turn behind every save asked for before it, so `base` is what those wrote.
           const { text, asked } = latest.current;
-          if (onDisk === from.current || onDisk === saving.current) {
-            // Back to what the typing started from: there is no longer anything to ask.
-            if (asked && onDisk === from.current) {
+          if (onDisk === base.text) {
+            // What the room knows the file to hold, or back to it: there is nothing to ask, or no longer anything.
+            if (asked) {
               latest.current.asked = false;
               setAsked(false);
               settle(key);
               saver.now();
             }
-          } else if (text === from.current && saving.current === null) {
-            from.current = onDisk;
+          } else if (text === base.text) {
+            // Changed outside, with nothing unsaved typed here: the room takes the file's text, and that is all.
+            base.text = onDisk;
+            asking.current = null;
             setText(onDisk);
           } else if (!asked) {
             ask();
@@ -204,14 +188,15 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
     };
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
-  }, [fs, date, key, settle, ask, saver]);
+  }, [fs, date, base, key, settle, ask, saver]);
 
   /** Answers the question with the file's text read afresh: it is what the typing stands on from here. */
   const answer = (take: boolean) => {
     if (!latest.current.asked) return;
     readPages(fs, date).then(
       (onDisk) => {
-        from.current = onDisk;
+        base.text = onDisk;
+        asking.current = null;
         latest.current.asked = false;
         setAsked(false);
         settle(key);

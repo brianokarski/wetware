@@ -2731,6 +2731,59 @@ const scenarios = [
     },
   },
   {
+    name: "pages-slow",
+    about: "on a slow disk, saves asked for while one is on its way land in order, none is taken for a change made elsewhere, and the month that comes back has the last count",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const pagesWrites = () => t.page.evaluate((path) => window.wetware.writes().filter((write) => write.path === path).length, PAGES);
+      await t.page.evaluate((path) => {
+        window.wetware.slowWrite(path, 400);
+        window.wetware.slowWrite("days/2026-11-17.md", 200);
+      }, PAGES);
+      await t.openPages();
+      await t.page.keyboard.type("One.");
+      // The first save is on its way to disk, and has not landed.
+      await t.page.waitForFunction(() => window.wetware.calls().includes("data_write"));
+      assert.equal(await t.file(PAGES), null);
+      // More is typed, and the window goes to the back: a second save is asked for behind the first.
+      await t.page.keyboard.type(" Two.");
+      await t.windowEvent("blur");
+      // And more again, and out of the room at once: a third, on the way out.
+      await t.page.keyboard.type(" Three.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      // The month is not shown until every one of them has landed, count and all. Nothing was asked, nothing is said.
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 3 of 750 words");
+      assert.equal(await t.file(PAGES), "One. Two. Three.");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 3$/m);
+      assert.equal(await pagesWrites(), 3);
+      assert.equal(await t.problem(), null);
+      assert.equal(await t.text(".pages-prompt"), "Morning pages3 / 750 words todayWrite");
+
+      // A save that fails with another behind it: the one behind is not taken for a change made elsewhere.
+      await t.openPages();
+      assert.equal((await t.room()).text, "One. Two. Three.");
+      const calls = await t.page.evaluate(() => window.wetware.calls().length);
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" Four.");
+      await t.page.waitForFunction((n) => window.wetware.calls().slice(n).includes("data_write"), {}, calls);
+      await t.page.keyboard.type(" Five.");
+      await t.windowEvent("blur");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent.includes("were not saved"));
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 900)));
+      assert.equal((await t.room()).said, "The pages for November 17 were not saved. No space left on device (os error 28)");
+      assert.deepEqual((await t.room()).actions, ["Dismiss"]);
+      assert.equal(await t.file(PAGES), "One. Two. Three.");
+      // The disk has room again, and leaving saves what is there.
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.file(PAGES), "One. Two. Three. Four. Five.");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 5 of 750 words");
+      assert.equal(await t.problem(), null);
+    },
+  },
+  {
     name: "pages-private",
     about: "what is written in the room is in its pages file and nowhere else: no other file, no storage, no log, no message, nothing sent but the write itself",
     query: "sync=fixture&key=stored",

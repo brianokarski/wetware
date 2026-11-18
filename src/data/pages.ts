@@ -202,26 +202,38 @@ export interface PagesSaved {
 }
 
 /**
+ * The text a pages file is known to hold: what the room last read from it,
+ * or last wrote to it. Every save is checked against it, and moves it on.
+ */
+export interface PagesBase {
+  text: string;
+}
+
+/**
  * Saves a day's pages, and then their word count.
  *
- * The text is only ever written over the text it was typed from. `from` is
- * what the room was showing when the typing began; if the file holds
- * anything else when this write's turn comes, nothing is written and it
- * rejects with `PagesChangedError`: the app never writes over text it
- * hasn't shown. Text that is already what the file holds is not written
- * again, and no file is made for pages that were never written.
+ * The text is only ever written over text the room has seen. `base` holds
+ * what the file was last known to hold; if the file holds anything else
+ * when this write's turn comes, nothing is written and it rejects with
+ * `PagesChangedError`: the app never writes over text it hasn't shown. A
+ * save that lands moves `base` on to what it wrote, there and then, so a
+ * second save asked for while the first is on its way is checked against
+ * the first one's text when its own turn comes. Text that is already what
+ * the file holds is not written again, and no file is made for pages that
+ * were never written.
  *
  * The count goes to the day file through the same queue as every other
  * change to it, as the value of `habit` with the source `morning_pages`,
  * unless the count there was set by hand. If the text is saved and the
  * count can't be, it rejects with `PagesCountError`.
  */
-export async function savePages(fs: DataFs, date: string, text: string, from: string, habit: Habit | null): Promise<PagesSaved> {
+export async function savePages(fs: DataFs, date: string, text: string, base: PagesBase, habit: Habit | null): Promise<PagesSaved> {
   const path = pagesPath(date);
   await inTurn(fs, path, async () => {
     const raw = await fs.read(path);
-    if (shown(raw) !== from) throw new PagesChangedError(date);
-    if (text !== from) await fs.write(path, written(text, raw));
+    if (shown(raw) !== base.text) throw new PagesChangedError(date);
+    if (text !== base.text) await fs.write(path, written(text, raw));
+    base.text = text;
   });
 
   const words = countWords(text);

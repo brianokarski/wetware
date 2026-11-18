@@ -663,9 +663,14 @@ html[data-room] body {
   background: var(--room-paper);
 }
 
-/* What the browser brings into view (the caret, a focused control) stays clear of the strip at the top. */
+/*
+ * What the browser brings into view (the caret, a focused control) stays clear of the strip at the
+ * top: its padding, its own line, the lines kept for what the room has to say, and a little air.
+ */
 html[data-room] {
-  scroll-padding-top: var(--room-top);
+  scroll-padding-top: calc(
+    var(--page-margin) + 2 * var(--space-2) + (1 + var(--room-said)) * var(--leading-mono) * var(--size-mono) + var(--room-top)
+  );
 }
 
 .room {
@@ -722,7 +727,7 @@ html[data-room] {
   display: flex;
   align-items: baseline;
   column-gap: var(--col-gutter);
-  min-height: calc(2 * var(--leading-mono) * var(--size-mono));
+  min-height: calc(var(--room-said) * var(--leading-mono) * var(--size-mono));
   padding-top: var(--space-2);
 }
 

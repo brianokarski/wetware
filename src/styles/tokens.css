@@ -84,6 +84,7 @@
   --room-measure: 38rem; /* width of the column of text */
   --room-margin: 4.5rem; /* the margin beside it, where pages are numbered */
   --room-mark: 2.5rem; /* length of the hairline under a page number */
+  --room-said: 2; /* lines kept under the strip for what the room has to say, so the text never moves for it */
   --room-top: var(--space-12); /* between the strip and the first line */
   --room-clear: var(--space-16); /* kept clear under the line being written */
   --room-foot: 40vh; /* empty paper under the last line */

@@ -17,6 +17,9 @@ const day = (frontmatter: string) => parseDay(`---\n${frontmatter}---\n`, DATE);
 const words = (count: number, from = 1) =>
   Array.from({ length: count }, (_, i) => `w${from + i}${(i + 1) % 10 === 0 ? "\n" : " "}`).join("").trimEnd();
 
+/** The text a pages file was last known to hold, for a save that stands alone. */
+const at = (text: string) => ({ text });
+
 /** A memory folder that counts its writes. */
 function folder(files: Record<string, string> = {}) {
   const fs = memoryFs(files);
@@ -173,7 +176,7 @@ describe("saving pages", () => {
   it("writes the text to pages/ and the count to the day file, and nothing else", async () => {
     const before = "---\ndate: 2026-11-17\nsleep_h: 7.7 # kept\n_sources:\n  sleep_h: intervals\n---\n\nDay notes.\n";
     const fs = folder({ [DAY]: before, "habits.yaml": "habits: []\n" });
-    const saved = await savePages(fs, DATE, "Three words here.", "", pages);
+    const saved = await savePages(fs, DATE, "Three words here.", at(""), pages);
     expect(saved).toEqual({ words: 3, count: "kept" });
     expect(fs.files.get(PAGES)).toBe("Three words here.");
     expect(fs.files.get(DAY)).toBe(
@@ -186,14 +189,14 @@ describe("saving pages", () => {
 
   it("makes the day file when there is none, holding the date and the count", async () => {
     const fs = folder();
-    await savePages(fs, DATE, "one two", "", pages);
+    await savePages(fs, DATE, "one two", at(""), pages);
     expect(fs.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmorning_pages_words: 2\n_sources:\n  morning_pages_words: morning_pages\n---\n");
   });
 
   it("writes the text exactly as typed: no line added at the end, none taken away", async () => {
     for (const text of ["no newline", "one newline\n", "two\n\n", "  leading and trailing  ", "\n\nblank lines first", "---\nlooks: like frontmatter\n---\n"]) {
       const fs = folder();
-      await savePages(fs, DATE, text, "", pages);
+      await savePages(fs, DATE, text, at(""), pages);
       expect(fs.files.get(PAGES)).toBe(text);
       expect(await readPages(fs, DATE)).toBe(text);
     }
@@ -201,15 +204,15 @@ describe("saving pages", () => {
 
   it("writes nothing for pages that were only looked at, and makes no file for pages never written", async () => {
     const fs = folder();
-    expect(await savePages(fs, DATE, "", "", pages)).toEqual({ words: 0, count: "kept" });
+    expect(await savePages(fs, DATE, "", at(""), pages)).toEqual({ words: 0, count: "kept" });
     expect(fs.written).toEqual([]);
     expect([...fs.files.keys()]).toEqual([]);
 
     const kept = folder({ [PAGES]: "Already here.\n", [DAY]: "---\nmood: 3\n---\n" });
     // Looked at and left: the room does not even ask for a save. If it did, the text would not be written again.
-    await savePages(kept, DATE, "Already here.\n", "Already here.\n", pages);
+    await savePages(kept, DATE, "Already here.\n", at("Already here.\n"), pages);
     expect(kept.written).toEqual([DAY]);
-    await savePages(kept, DATE, "Already here.\n", "Already here.\n", pages);
+    await savePages(kept, DATE, "Already here.\n", at("Already here.\n"), pages);
     expect(kept.written).toEqual([DAY]);
   });
 
@@ -217,47 +220,47 @@ describe("saving pages", () => {
     const fs = folder({ [PAGES]: "Written this morning.", [DAY]: "---\nmood: 3\n---\n" });
     // The room opened on the morning's text; something else has added to the file since.
     fs.files.set(PAGES, "Written this morning. And a line from another app.");
-    const refused = await savePages(fs, DATE, "Written this morning. Typed in the room.", "Written this morning.", pages).catch((e) => e);
+    const refused = await savePages(fs, DATE, "Written this morning. Typed in the room.", at("Written this morning."), pages).catch((e) => e);
     expect(refused).toBeInstanceOf(PagesChangedError);
     expect(fs.written).toEqual([]);
     expect(fs.files.get(PAGES)).toBe("Written this morning. And a line from another app.");
     expect(fs.files.get(DAY)).toBe("---\nmood: 3\n---\n");
     // A file that has appeared, or gone, since the room opened is a change too.
     const appeared = folder({ [PAGES]: "Made elsewhere." });
-    expect(await savePages(appeared, DATE, "Typed.", "", pages).catch((e) => e)).toBeInstanceOf(PagesChangedError);
+    expect(await savePages(appeared, DATE, "Typed.", at(""), pages).catch((e) => e)).toBeInstanceOf(PagesChangedError);
     const gone = folder();
-    expect(await savePages(gone, DATE, "Typed more.", "Typed.", pages).catch((e) => e)).toBeInstanceOf(PagesChangedError);
+    expect(await savePages(gone, DATE, "Typed more.", at("Typed."), pages).catch((e) => e)).toBeInstanceOf(PagesChangedError);
     expect(gone.written).toEqual([]);
     // Once the room has taken the file's text as what it is typing over, the save goes through.
-    await savePages(fs, DATE, "Both.", "Written this morning. And a line from another app.", pages);
+    await savePages(fs, DATE, "Both.", at("Written this morning. And a line from another app."), pages);
     expect(fs.files.get(PAGES)).toBe("Both.");
   });
 
   it("saves the text and leaves a count that was set by hand", async () => {
     const manual = "---\ndate: 2026-11-17\nmorning_pages_words: 750\n_sources:\n  morning_pages_words: manual\n---\n";
     const fs = folder({ [DAY]: manual });
-    expect(await savePages(fs, DATE, "Only four words here", "", pages)).toEqual({ words: 4, count: "by_hand" });
+    expect(await savePages(fs, DATE, "Only four words here", at(""), pages)).toEqual({ words: 4, count: "by_hand" });
     expect(fs.files.get(PAGES)).toBe("Only four words here");
     expect(fs.files.get(DAY)).toBe(manual);
     expect(fs.written).toEqual([PAGES]);
 
     const unrecorded = folder({ [DAY]: "---\nmorning_pages_words: 420\n---\n" });
-    expect((await savePages(unrecorded, DATE, "two words", "", pages)).count).toBe("by_hand");
+    expect((await savePages(unrecorded, DATE, "two words", at(""), pages)).count).toBe("by_hand");
     expect(unrecorded.files.get(DAY)).toBe("---\nmorning_pages_words: 420\n---\n");
   });
 
   it("follows the text as it grows and shrinks, and takes the count out when the text is emptied", async () => {
     const fs = folder({ [DAY]: "---\ndate: 2026-11-17\nmood: 3\n---\n" });
-    await savePages(fs, DATE, words(10), "", pages);
-    await savePages(fs, DATE, words(760), words(10), pages);
+    await savePages(fs, DATE, words(10), at(""), pages);
+    await savePages(fs, DATE, words(760), at(words(10)), pages);
     expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(760);
-    await savePages(fs, DATE, words(5), words(760), pages);
+    await savePages(fs, DATE, words(5), at(words(760)), pages);
     expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(5);
-    expect(await savePages(fs, DATE, "", words(5), pages)).toEqual({ words: 0, count: "kept" });
+    expect(await savePages(fs, DATE, "", at(words(5)), pages)).toEqual({ words: 0, count: "kept" });
     expect(fs.files.get(PAGES)).toBe("");
     expect(fs.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmood: 3\n_sources:\n---\n");
     // Only white space is no words either.
-    await savePages(fs, DATE, "  \n ", "", pages);
+    await savePages(fs, DATE, "  \n ", at(""), pages);
     expect(fs.files.get(PAGES)).toBe("  \n ");
     expect(parseDay(fs.files.get(DAY)!, DATE).values).toEqual({ mood: 3 });
   });
@@ -266,29 +269,29 @@ describe("saving pages", () => {
     const fs = folder({ [PAGES]: "\uFEFFline one\r\nline two\r\n" });
     expect(await readPages(fs, DATE)).toBe("line one\nline two\n");
     // Looked at and left: not rewritten, though what is shown is not byte for byte what is on disk.
-    await savePages(fs, DATE, "line one\nline two\n", "line one\nline two\n", null);
+    await savePages(fs, DATE, "line one\nline two\n", at("line one\nline two\n"), null);
     expect(fs.written).toEqual([]);
-    await savePages(fs, DATE, "line one\nline two\nline three\n", "line one\nline two\n", null);
+    await savePages(fs, DATE, "line one\nline two\nline three\n", at("line one\nline two\n"), null);
     expect(fs.files.get(PAGES)).toBe("\uFEFFline one\r\nline two\r\nline three\r\n");
   });
 
   it("keeps the text even when there is no habit to count it for", async () => {
     const fs = folder();
-    expect(await savePages(fs, DATE, "some words", "", null)).toEqual({ words: 2, count: "no_habit" });
+    expect(await savePages(fs, DATE, "some words", at(""), null)).toEqual({ words: 2, count: "no_habit" });
     expect([...fs.files.keys()]).toEqual([PAGES]);
   });
 
   it("says so when the text is saved and the count can't be", async () => {
     const broken = "---\nmood: 1\nmood: 2\n---\n";
     const fs = folder({ [DAY]: broken });
-    const failed = await savePages(fs, DATE, "The text is safe.", "", pages).catch((e) => e);
+    const failed = await savePages(fs, DATE, "The text is safe.", at(""), pages).catch((e) => e);
     expect(failed).toBeInstanceOf(PagesCountError);
     expect(failed.message).toBe("The word count could not be written to days/2026-11-17.md. Frontmatter: Invalid YAML: Map keys must be unique (line 3).");
     expect(fs.files.get(PAGES)).toBe("The text is safe.");
     expect(fs.files.get(DAY)).toBe(broken);
     // The next save has no text to write and tries the count again.
     fs.files.set(DAY, "---\nmood: 1\n---\n");
-    expect(await savePages(fs, DATE, "The text is safe.", "The text is safe.", pages)).toEqual({ words: 4, count: "kept" });
+    expect(await savePages(fs, DATE, "The text is safe.", at("The text is safe."), pages)).toEqual({ words: 4, count: "kept" });
     expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(4);
   });
 
@@ -296,7 +299,7 @@ describe("saving pages", () => {
     const fs = folder({ [DAY]: "---\ndate: 2026-11-17\n---\n" });
     await Promise.all([
       writeDay(fs, DATE, { values: { mood: 4 }, sources: { mood: "manual" } }),
-      savePages(fs, DATE, "a b c", "", pages),
+      savePages(fs, DATE, "a b c", at(""), pages),
       writeDay(fs, DATE, { notes: "Day notes." }),
     ]);
     const saved = parseDay(fs.files.get(DAY)!, DATE);
@@ -305,14 +308,56 @@ describe("saving pages", () => {
     expect(saved.notes).toBe("Day notes.");
   });
 
-  it("saves in the order asked, one after another", async () => {
+  it("saves asked for while one is on its way land one after another, each over the last", async () => {
     const fs = folder();
-    const first = savePages(fs, DATE, "one", "", pages);
-    const second = savePages(fs, DATE, "one two", "one", pages);
-    const third = savePages(fs, DATE, "one two three", "one two", pages);
-    await Promise.all([first, second, third]);
+    // One room, one notion of what the file holds. Three saves asked for at once, as on a slow disk.
+    const base = { text: "" };
+    const first = savePages(fs, DATE, "one", base, pages);
+    const second = savePages(fs, DATE, "one two", base, pages);
+    const third = savePages(fs, DATE, "one two three", base, pages);
+    expect(base.text).toBe("");
+    expect(await Promise.all([first, second, third])).toEqual([
+      { words: 1, count: "kept" },
+      { words: 2, count: "kept" },
+      { words: 3, count: "kept" },
+    ]);
     expect(fs.files.get(PAGES)).toBe("one two three");
+    expect(base.text).toBe("one two three");
     expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(3);
+    expect(fs.written.filter((path) => path === PAGES).length).toBe(3);
+  });
+
+  it("a save that fails leaves what the file is known to hold as it was, so the next one is not taken for an outside change", async () => {
+    const fs = folder({ [PAGES]: "kept" });
+    const write = fs.write.bind(fs);
+    let full = true;
+    fs.write = async (path, text) => {
+      if (full && path === PAGES) throw new Error("No space left on device (os error 28)");
+      await write(path, text);
+    };
+    const base = { text: "kept" };
+    const failed = savePages(fs, DATE, "kept, and more", base, pages).catch((e) => e);
+    const next = savePages(fs, DATE, "kept, and more still", base, pages).catch((e) => e);
+    expect((await failed).message).toBe("No space left on device (os error 28)");
+    // The second is behind the first on the same full disk, and fails the same way: not as a change made elsewhere.
+    expect((await next).message).toBe("No space left on device (os error 28)");
+    expect(base.text).toBe("kept");
+    expect(fs.files.get(PAGES)).toBe("kept");
+    full = false;
+    expect(await savePages(fs, DATE, "kept, and more still", base, pages)).toEqual({ words: 4, count: "kept" });
+    expect(base.text).toBe("kept, and more still");
+  });
+
+  it("a save refused for a change made elsewhere does not move what the file is known to hold", async () => {
+    const fs = folder({ [PAGES]: "theirs" });
+    const base = { text: "mine" };
+    await savePages(fs, DATE, "mine, and more", base, pages).catch(() => {});
+    expect(base.text).toBe("mine");
+    // And text that is already what the file holds is known to be there without being written.
+    const same = { text: "theirs" };
+    await savePages(fs, DATE, "theirs", same, null);
+    expect(same.text).toBe("theirs");
+    expect(fs.written).toEqual([]);
   });
 });
 
@@ -323,16 +368,16 @@ describe("what an error about pages says", () => {
 
   it("names the file and never quotes it", async () => {
     const changed = folder({ [PAGES]: `${SECRET} on disk` });
-    const refused: Error = await savePages(changed, DATE, `${SECRET} typed`, `${SECRET} at first`, pages).catch((e) => e);
+    const refused: Error = await savePages(changed, DATE, `${SECRET} typed`, at(`${SECRET} at first`), pages).catch((e) => e);
     expect(refused.message).toBe("pages/2026-11-17.md was changed outside the app");
     expect(everything(refused)).not.toContain("marmalade");
 
     const full: DataFs = { ...folder(), write: async () => Promise.reject("No space left on device (os error 28)") };
-    const unsaved = await savePages(full, DATE, SECRET, "", pages).catch((e) => e);
+    const unsaved = await savePages(full, DATE, SECRET, at(""), pages).catch((e) => e);
     expect(String(unsaved)).toBe("No space left on device (os error 28)");
 
     const broken = folder({ [DAY]: "---\nmood: [\n---\n" });
-    const uncounted: Error = await savePages(broken, DATE, SECRET, "", pages).catch((e) => e);
+    const uncounted: Error = await savePages(broken, DATE, SECRET, at(""), pages).catch((e) => e);
     expect(uncounted).toBeInstanceOf(PagesCountError);
     expect(everything(uncounted)).not.toContain("marmalade");
     expect(uncounted.message).toContain("days/2026-11-17.md");
