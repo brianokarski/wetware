@@ -85,8 +85,10 @@ const FIELD_ORDER = [
   "show_on_calendar", "order", "archived",
 ];
 
+/** A seed habit with every field spelled out, in the order SPEC §5.2 lists them. */
 function seed(order: number, h: Pick<Habit, "id" | "name" | "type"> & Partial<Habit>): Habit {
-  return { ...DEFAULTS, ...h, order } as Habit;
+  const full: Record<string, unknown> = { ...DEFAULTS, ...h, order };
+  return Object.fromEntries(FIELD_ORDER.map((key) => [key, full[key]])) as Habit;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  cellPatch, cellSource, cellState, cellValue, dayTags, loadMonth, memoryFs, monthCount, parseCellInput, parseDay,
-  parseHabits, withPatch, writeCell, type Day, type Habit,
+  cellPatch, cellSource, cellState, cellValue, dayTags, describeCell, habitHint, loadMonth, memoryFs, monthCount,
+  parseCellInput, parseDay, parseHabits, shortNumber, withPatch, writeCell, type Day, type Habit,
 } from "../src/data";
 
 const TODAY = "2026-11-17";
@@ -382,5 +382,36 @@ describe("loading a month", () => {
     expect(month["2026-11-05"].error).toMatch(/unique/);
     expect(month["2026-11-05"].values).toEqual({});
     expect(month["2026-11-06"].values).toEqual({ mood: 3 });
+  });
+});
+
+describe("showing a cell", () => {
+  it("shortens numbers to fit a narrow cell", () => {
+    const cases: [number, string][] = [
+      [7.7, "7.7"], [171, "171"], [171.2, "171"], [171.25, "171"], [7.75, "7.75"], [17.75, "17.8"], [0, "0"], [812, "812"], [1034, "1034"],
+      [12345, "12k"], [1234.5, "1235"], [-4.5, "-4.5"], [-12.5, "-12"], [-12.75, "-13"], [99999, "100k"], [2500000, "3M"], [0.125, "0.1"],
+    ];
+    for (const [value, text] of cases) expect(shortNumber(value)).toBe(text);
+    expect(shortNumber(171.25, 6)).toBe("171.25");
+  });
+
+  it("describes a cell in words for its label, with the full value", () => {
+    const say = (id: string, date: string, frontmatter = "") => describeCell(habit(id), state(id, date, frontmatter));
+    expect(say("run", PAST, "run: true\n")).toBe("done");
+    expect(say("travel", PAST, "tags: [travel]\n")).toBe("tagged");
+    expect(say("weight", PAST, "weight_lb: 171.25\n")).toBe("171.25 lb");
+    expect(say("mood", PAST, "mood: 4\n")).toBe("4 of 5");
+    expect(say("stretch", PAST, "stretch_min: 15\n")).toBe("15 min");
+    expect(say("morning_pages", PAST, "morning_pages_words: 300\n")).toBe("300 of 750 words");
+    expect(say("morning_pages", PAST, "morning_pages_words: 812\n")).toBe("812 of 750 words, goal met");
+    expect(say("pages_free", PAST, "pages_free_words: 5\n")).toBe("5 words");
+    expect(say("weight", PAST)).toBe("empty");
+    expect(say("run", PAST)).toBe("no data");
+    expect(say("weight", TODAY)).toBe("not filled in yet");
+    expect(say("weight", FUTURE)).toBe("not here yet");
+  });
+
+  it("gives each habit its small print", () => {
+    expect(habits.map(habitHint)).toEqual(["lb", "", "h", "750 words", "", "1–5", "min", "", "f", "words"]);
   });
 });

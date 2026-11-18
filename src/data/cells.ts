@@ -89,7 +89,7 @@ export function cellState(habit: Habit, day: Day, today: string): Cell {
   return { state: external ? "no_data" : "missed", ...measured };
 }
 
-/** "14/30": the days of the month that count for a habit, out of all its days. Not a streak. */
+/** "14/30": the days of the month that count for a habit, out of all its days. A count and nothing more. */
 export function monthCount(habit: Habit, days: Iterable<Day>, ym: YearMonth): { done: number; total: number } {
   let done = 0;
   for (const day of days) if (measure(habit, day).met) done++;
@@ -185,4 +185,44 @@ export async function loadMonth(fs: DataFs, ym: YearMonth): Promise<Record<strin
     monthDates(ym).map((date) => (present.has(`${date}.md`) ? readDay(fs, date) : parseDay(null, date))),
   );
   return Object.fromEntries(days.map((day) => [day.date, day]));
+}
+
+/**
+ * A number in at most `width` characters, for a narrow cell: decimals go
+ * first, then thousands become "k". The full value goes in the cell's label.
+ */
+export function shortNumber(value: number, width = 4): string {
+  const candidates = [String(value), String(Number(value.toFixed(1))), String(Math.round(value))];
+  const fits = candidates.find((text) => text.length <= width);
+  if (fits !== undefined) return fits;
+  const thousands = `${Math.round(value / 1000)}k`;
+  return thousands.length <= width ? thousands : `${Math.round(value / 1e6)}M`;
+}
+
+/** What a cell holds, in words, for its accessible label. Plain statements: an empty day is just empty. */
+export function describeCell(habit: Habit, cell: Cell): string {
+  if (cell.value === null) {
+    return { done: "", missed: "empty", no_data: "no data", pending: "not filled in yet", future: "not here yet" }[cell.state];
+  }
+  const unit = habit.unit ? ` ${habit.unit}` : "";
+  switch (habit.type) {
+    case "check":
+      return "done";
+    case "tag":
+      return "tagged";
+    case "scale":
+      return `${cell.value} of 5`;
+    case "progress":
+      if (habit.goal === null) return `${cell.value}${unit}`;
+      return `${cell.value} of ${habit.goal}${unit}${cell.met ? ", goal met" : ""}`;
+    default:
+      return `${cell.value}${unit}`;
+  }
+}
+
+/** The small print beside a habit's name: its unit, goal or range. Empty for check and tag habits. */
+export function habitHint(habit: Habit): string {
+  if (habit.type === "scale") return "1–5";
+  if (habit.type === "progress" && habit.goal !== null) return `${habit.goal}${habit.unit ? ` ${habit.unit}` : ""}`;
+  return habit.type === "check" || habit.type === "tag" ? "" : (habit.unit ?? "");
 }
