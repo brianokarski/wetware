@@ -150,18 +150,23 @@ function inspect(raw: string): Inspected {
   return { parts, data, error: null };
 }
 
+/** Plain assignment, except that a key called `__proto__` is stored like any other. */
+function put<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 const toNotes = (body: string) => body.replace(/^\r?\n/, "").replace(/\r\n/g, "\n");
 
 export function parseDay(raw: string | null, date: string): Day {
   const { parts, data, error } = inspect(raw ?? "");
   const values: Record<string, DayValue> = {};
   for (const [key, value] of Object.entries(data)) {
-    if (!RESERVED.has(key)) values[key] = value as DayValue;
+    if (!RESERVED.has(key)) put(values, key, value as DayValue);
   }
   const sources: Record<string, string> = {};
   if (isDict(data._sources)) {
     for (const [key, source] of Object.entries(data._sources)) {
-      if (typeof source === "string") sources[key] = source;
+      if (typeof source === "string") put(sources, key, source);
     }
   }
   return {

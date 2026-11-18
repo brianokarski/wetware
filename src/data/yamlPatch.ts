@@ -342,6 +342,13 @@ function locate(doc: Document.Parsed, path: YamlPath): Entry[] {
   return entries;
 }
 
+/** No content yet, though there may be comments or a `---` line. */
+function isEmptyDocument(doc: Document.Parsed): boolean {
+  const root: unknown = doc.contents;
+  if (root === null) return true;
+  return isScalar(root) && root.value === null && !!root.range && root.range[0] === root.range[1];
+}
+
 function isBlock(node: unknown): node is YAMLMap | YAMLSeq {
   return isCollection(node) && !node.flow && node.items.length > 0;
 }
@@ -464,8 +471,7 @@ function* candidates(
         else if (ownsLine(text, first)) yield insertLines(text, lineStart(text, first.start), block, eol);
         else yield insertLines(text, entryEnd(text, siblings[siblings.length - 1]), block, eol);
       }
-    } else if (depth === 0 && typeof key === "string" && doc.contents === null) {
-      // Nothing in the document yet (it may still hold comments).
+    } else if (depth === 0 && typeof key === "string" && isEmptyDocument(doc)) {
       yield insertLines(text, text.length, renderLines(key, value, false).join(eol), eol);
     }
   } else if (op.op === "append") {

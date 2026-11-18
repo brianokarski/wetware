@@ -86,6 +86,7 @@ describe("adding a key", () => {
     expect(patchYaml("", [set(["a"], 1)])).toBe("a: 1\n");
     expect(patchYaml(null, [set(["a"], 1)])).toBe("a: 1\n");
     expect(patchYaml("# only a comment\n", [set(["a"], 1)])).toBe("# only a comment\na: 1\n");
+    expect(patchYaml("---\n", [set(["a"], 1)])).toBe("---\na: 1\n");
     expect(patchYaml("a: 1", [set(["b"], 2)])).toBe("a: 1\nb: 2");
   });
 
@@ -256,6 +257,25 @@ describe("numbers the user wrote", () => {
 
   it("can be patched to a large integer exactly", () => {
     expect(patchYaml("n: 1\n", [set(["n"], 12345678901234567890n)])).toBe("n: 12345678901234567890\n");
+  });
+});
+
+describe("awkward keys", () => {
+  it("treats __proto__ and other Object.prototype names as ordinary keys", () => {
+    expect(patchYaml("a: 1\n", [set(["__proto__"], 1), set(["constructor", "x"], 1)]))
+      .toBe("a: 1\n__proto__: 1\nconstructor:\n  x: 1\n");
+    expect(patchYaml("__proto__: 1\nhasOwnProperty: 2\ntoString: 3\n", [set(["__proto__"], 3), del(["hasOwnProperty"])]))
+      .toBe("__proto__: 3\ntoString: 3\n");
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+  });
+
+  it("finds numeric and quoted keys", () => {
+    expect(patchYaml("1: a\n'odd key': 1 # c\n", [set(["1"], "z"), set(["odd key"], 2)])).toBe("1: z\n'odd key': 2 # c\n");
+  });
+
+  it("handles explicit and anchored keys", () => {
+    expect(patchYaml("? complex\n: v\n&x k: 1\nb: 1\n", [set(["complex"], 2), del(["k"]), set(["c"], 3)]))
+      .toBe("? complex\n: 2\nb: 1\nc: 3\n");
   });
 });
 

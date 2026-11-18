@@ -222,6 +222,12 @@ describe("N1: a file that can't be written isn't quietly read", () => {
     expect(fs.files.get("days/2026-11-17.md")).toBe(raw);
   });
 
+  it("reads keys named like Object.prototype members as plain values", () => {
+    const day = parseDay("---\ntoString: 1\n__proto__: 2\nconstructor: x\n---\n", DATE);
+    expect(Object.entries(day.values)).toEqual([["toString", 1], ["__proto__", 2], ["constructor", "x"]]);
+    expect(Object.getPrototypeOf(day.values)).toBe(Object.prototype);
+  });
+
   it("a readable file has no error", () => {
     expect(parseDay("---\ndate: 2026-11-17\nmood: 1\n---\n", DATE).error).toBeNull();
     expect(parseDay("no frontmatter\n", DATE).error).toBeNull();
