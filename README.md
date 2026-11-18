@@ -55,6 +55,8 @@ npm run shots         # screenshots of the UI into .shots/, with end-to-end chec
 | `src-tauri/` | Rust shell: file access limited to the data folder, folder dialog, Keychain, and the two fetches sync makes (`net.rs`). |
 | `dev/` | The browser preview and the screenshot script. Not part of the app bundle. |
 
+The shell gives each opening of the data folder a number. Every file command carries the number it was given, and the shell refuses one whose number is stale, so nothing worked out for one folder (a sync, a cell edit) can be written into another.
+
 The data folder's location is kept in the app's own config (`~/Library/Application Support/com.brianokarski.wetware/config.json`), since it can't live inside the folder it points to. So is the time of the last sync. The intervals.icu key can be saved or removed from the UI but is never handed back to it; sync reads it on the Rust side and sends it only to intervals.icu.
 
 ## Sync
@@ -69,8 +71,10 @@ The two are independent: either works without the other.
 What sync will and won't write:
 
 - A value you set by hand is never written over. That means any key whose `_sources` entry is `manual`, and any value that has no `_sources` entry at all (typed into the file in Obsidian, say). To hand a value back to sync, delete its key and its `_sources` line.
-- An activity habit is `false` only on a day the watch was plainly alive (some activity, or a wellness record with something measured). A day with nothing from the source is left unwritten and shows as "no data".
-- Activities that reached intervals.icu through Strava arrive with no detail and are not counted. Settings says how many there were.
+- The reverse is not protected: if you change a value in Obsidian and leave its `_sources` entry saying `intervals` or `open-meteo`, the next sync puts the source's value back. Change the entry to `manual` (the app does this itself when you edit in the grid).
+- An activity habit is `false` only on a day the watch was plainly alive (some activity, or a wellness record with something a device measured) and everything done that day can be read. A day with nothing from the source is left unwritten and shows as "no data".
+- Activities that reached intervals.icu through Strava arrive with no detail and are not counted. Settings says how many there were. A day that has one gets no `false`, since it might have been the very thing, and a `false` sync wrote there earlier is taken back.
+- Records sync can't place (a date or start time in a form it doesn't expect, an activity with no type) are left out and counted. The sync message and Settings say how many.
 
 **Lift and Climb are not set up yet.** Their `source_rule.activity_types` lists in `habits.yaml` are empty, so sync leaves them alone. In Settings, "Test connection" lists the activity types in your own data for the last 90 days with a count of each. Put the ones that count into the list, spelled as shown (case doesn't matter):
 
@@ -88,6 +92,7 @@ There was no API key when this was built, so intervals.icu has never been called
 - that `weight` is in kilograms (the document gives no unit);
 - the exact form of `start_date_local` and of a wellness record's `id`;
 - what a Strava stub looks like (taken from forum posts: `source: STRAVA` and no `type`);
+- which wellness fields only a device writes. A day counts as "the watch was on" if it has sleep time or score, sleeping or resting heart rate, HRV, SpO2, respiration, steps or floors. Most of these can also be typed into intervals.icu by hand;
 - that a key which is wrong answers 401 or 403, and that rate limiting answers 429;
 - the Keychain read from the Rust side in a built, signed app.
 
