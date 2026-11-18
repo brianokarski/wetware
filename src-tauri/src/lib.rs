@@ -8,14 +8,16 @@
 mod files;
 mod keychain;
 mod net;
+mod order;
 
 use std::{
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 const SUGGESTED_FOLDER: &str = "Wetware Data";
@@ -75,11 +77,15 @@ struct Open {
 /// worked out for one folder can't land in another.
 struct Shell {
     open: Mutex<Open>,
+    /// Keeps writes to one file in the order they were asked for.
+    turns: order::Turns,
+    /// Holds a close until the webview has saved what was typed.
+    leaving: order::Leaving,
 }
 
 impl Shell {
     fn new(config: AppConfig) -> Self {
-        Shell { open: Mutex::new(Open { config, folder: 1 }) }
+        Shell { open: Mutex::new(Open { config, folder: 1 }), turns: order::Turns::default(), leaving: order::Leaving::default() }
     }
 
     /// The folder now open, if there is one.
@@ -240,8 +246,19 @@ fn read_in(shell: &Shell, folder: u64, path: &str) -> CmdResult<Option<String>> 
     files::read(&shell.root_for(folder)?, path)
 }
 
+/// Writes take their turn file by file: one that is slow to land holds back
+/// the ones asked for behind it for the same file, so a later write can
+/// never land first and then be written over. The place in line, and the
+/// folder the write is for, are both settled the moment it arrives.
 fn write_in(shell: &Shell, folder: u64, path: &str, contents: &str) -> CmdResult<()> {
-    files::write(&shell.root_for(folder)?, path, contents)
+    let root = shell.root_for(folder)?;
+    shell.turns.in_turn(&root.join(path), || files::write(&root, path, contents))
+}
+
+/// Taking a file away waits its turn behind the writes to it, like a write.
+fn remove_in(shell: &Shell, folder: u64, path: &str, expected: &str) -> CmdResult<()> {
+    let root = shell.root_for(folder)?;
+    shell.turns.in_turn(&root.join(path), || files::remove(&root, path, expected))
 }
 
 fn list_in(shell: &Shell, folder: u64, dir: &str) -> CmdResult<Vec<String>> {
@@ -258,6 +275,13 @@ fn data_read(shell: State<Shell>, folder: u64, path: String) -> CmdResult<Option
 fn data_write(shell: State<Shell>, folder: u64, path: String, contents: String) -> CmdResult<()> {
     trace("data_write");
     write_in(&shell, folder, &path, &contents)
+}
+
+/// Removes a file, if it holds exactly what the webview says it has just read there.
+#[tauri::command]
+fn data_remove(shell: State<Shell>, folder: u64, path: String, expected: String) -> CmdResult<()> {
+    trace("data_remove");
+    remove_in(&shell, folder, &path, &expected)
 }
 
 #[tauri::command]
@@ -278,6 +302,71 @@ fn sync_state_set(app: AppHandle, shell: State<Shell>, folder: u64, state: SyncS
     shell.set_sync_state(folder, state, &|config| write_config(&app, config))
 }
 
+/// How long a close is held for the webview to save what was typed. Past
+/// this the app closes anyway: quitting must never hang on a save.
+const FLUSH_LIMIT: Duration = Duration::from_secs(3);
+/// What the webview is sent when a close is held. It saves, and answers with `flush_done`.
+const FLUSH_ASKED: &str = "flush-asked";
+/// The menu item that quits by way of `ExitRequested`, so that the quit can be held.
+const QUIT_ID: &str = "quit";
+
+/// The webview's answer to `flush-asked`: everything typed is on disk.
+#[tauri::command]
+fn flush_done(shell: State<Shell>) {
+    trace("flush_done");
+    shell.leaving.answer();
+}
+
+/// A window has been asked to close, or the app to quit. Says whether to
+/// hold it. The first time, the webview is asked to save what was typed and
+/// `then` runs once it has answered or `FLUSH_LIMIT` has passed; `then`
+/// closes for real, and that close is let through. With `WETWARE_TRACE=1`
+/// the asking, and the answer or the giving up, each print a line.
+fn hold_close(app: &AppHandle, then: impl FnOnce(&AppHandle) + Send + 'static) -> bool {
+    match app.state::<Shell>().leaving.request() {
+        order::Request::Go => false,
+        order::Request::Wait => true,
+        order::Request::Ask => {
+            trace("flush_asked");
+            // With no webview to ask there is nothing to wait for.
+            let limit = if app.emit(FLUSH_ASKED, ()).is_ok() { FLUSH_LIMIT } else { Duration::ZERO };
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let answered = app.state::<Shell>().leaving.wait(limit);
+                if answered {
+                    trace("flush_answered");
+                } else {
+                    trace("flush_timed_out");
+                }
+                then(&app);
+            });
+            true
+        }
+    }
+}
+
+/// The default menu, with one change. Its Quit item quits through
+/// `terminate:`, which the app has no chance to hold; ours asks the app to
+/// exit, which it can. If the default menu isn't laid out as expected it is
+/// used as it is, and quitting works as it always did.
+fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let menu = tauri::menu::Menu::default(app)?;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::menu::{MenuItem, MenuItemKind};
+        // The first submenu is the app's own, and Quit is the last thing in it.
+        if let Some(MenuItemKind::Submenu(own)) = menu.items()?.into_iter().next() {
+            let items = own.items()?;
+            if let Some(MenuItemKind::Predefined(_)) = items.last() {
+                let quit = MenuItem::with_id(app, QUIT_ID, format!("Quit {}", app.package_info().name), true, Some("CmdOrCtrl+Q"))?;
+                own.remove_at(items.len() - 1)?;
+                own.append(&quit)?;
+            }
+        }
+    }
+    Ok(menu)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -288,6 +377,23 @@ pub fn run() {
             app.manage(Shell::new(config));
             Ok(())
         })
+        .menu(menu)
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_ID {
+                app.exit(0);
+            }
+        })
+        // A window asked to close is held until what was typed is saved, then destroyed.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let closing = window.clone();
+                if hold_close(window.app_handle(), move |_| {
+                    let _ = closing.destroy();
+                }) {
+                    api.prevent_close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_data_root,
             suggested_data_root,
@@ -295,7 +401,9 @@ pub fn run() {
             choose_data_root,
             data_read,
             data_write,
+            data_remove,
             data_list,
+            flush_done,
             keychain::intervals_key_set,
             keychain::intervals_key_exists,
             keychain::intervals_key_delete,
@@ -304,8 +412,16 @@ pub fn run() {
             sync_state_get,
             sync_state_set,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // The app asked to quit is held the same way, then exits.
+        .run(|app, event| {
+            if let RunEvent::ExitRequested { api, code, .. } = event {
+                if hold_close(app, move |app| app.exit(code.unwrap_or(0))) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -431,6 +547,69 @@ mod tests {
         files::write(&root, "days/2026-11-17.md", "written as the folder changed").unwrap();
         assert_eq!(Folders::names(&folders.a), ["days/2026-11-17.md"]);
         assert!(Folders::names(&folders.b).is_empty());
+    }
+
+    #[test]
+    fn a_write_waits_its_turn_behind_one_to_the_same_file_that_has_not_landed() {
+        let folders = Folders::new("order");
+        let (shell, id) = shell_on(&folders.a);
+        let shell = std::sync::Arc::new(shell);
+        let stuck = folders.a.join("pages/2026-11-17.md");
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (started, has_started) = std::sync::mpsc::channel::<()>();
+
+        // An earlier write to the file that is slow to land: it has its turn, and keeps it.
+        let first = {
+            let (shell, root) = (shell.clone(), folders.a.clone());
+            std::thread::spawn(move || {
+                shell.turns.in_turn(&root.join("pages/2026-11-17.md"), || {
+                    started.send(()).unwrap();
+                    held.recv().unwrap();
+                    files::write(&root, "pages/2026-11-17.md", "two sentences")
+                })
+            })
+        };
+        has_started.recv().unwrap();
+        // A newer one, asked for behind it.
+        let second = {
+            let shell = shell.clone();
+            std::thread::spawn(move || write_in(&shell, id, "pages/2026-11-17.md", "three sentences"))
+        };
+        let began = std::time::Instant::now();
+        while shell.turns.in_line(&stuck) != 2 {
+            assert!(began.elapsed() < Duration::from_secs(5), "the second write never got in line");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // It has not landed ahead of the first. Other files are written meanwhile, and a file can be read.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!stuck.exists());
+        write_in(&shell, id, "days/2026-11-17.md", "another file").unwrap();
+        assert_eq!(read_in(&shell, id, "days/2026-11-17.md").unwrap().as_deref(), Some("another file"));
+
+        // The first lands at last, and the newer one after it: the file ends with the newer text.
+        release.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(&stuck).unwrap(), "three sentences");
+        assert_eq!(shell.turns.files(), 0);
+    }
+
+    #[test]
+    fn a_file_is_removed_in_its_turn_and_only_for_the_folder_that_is_open() {
+        let folders = Folders::new("remove");
+        let (shell, old) = shell_on(&folders.a);
+        write_in(&shell, old, "days/2026-11-17.md", "stub").unwrap();
+        assert_eq!(remove_in(&shell, old, "days/2026-11-17.md", "not what is there"), Err("2026-11-17.md has changed, so it was not removed".into()));
+        assert_eq!(Folders::names(&folders.a), ["days/2026-11-17.md"]);
+        let new = shell.open_folder(folders.b.clone(), &kept).unwrap().id;
+        assert_eq!(remove_in(&shell, old, "days/2026-11-17.md", "stub"), Err(FOLDER_CHANGED.into()));
+        assert_eq!(Folders::names(&folders.a), ["days/2026-11-17.md"]);
+        shell.open_folder(folders.a.clone(), &kept).unwrap();
+        assert_eq!(remove_in(&shell, new, "days/2026-11-17.md", "stub"), Err(FOLDER_CHANGED.into()));
+        let again = shell.opened().unwrap().unwrap().id;
+        remove_in(&shell, again, "days/2026-11-17.md", "stub").unwrap();
+        assert!(Folders::names(&folders.a).is_empty());
+        assert_eq!(shell.turns.files(), 0);
     }
 
     #[test]

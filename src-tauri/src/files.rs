@@ -115,6 +115,39 @@ pub fn write(root: &Path, rel: &str, contents: &str) -> Result<()> {
     write_atomic_with(&resolve(&root, rel)?, contents.as_bytes(), private, unique_suffix)
 }
 
+/// Takes a file away, but only if it holds exactly `expected`: the webview
+/// says what it has just read there, and a file that holds anything else is
+/// left alone. A file that isn't there is already gone. A folder, and a file
+/// marked read-only, are refused.
+pub fn remove(root: &Path, rel: &str, expected: &str) -> Result<()> {
+    parts(rel)?;
+    let Some(root) = real_root(root)? else {
+        return Ok(());
+    };
+    let path = resolve(&root, rel)?;
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let held = match fs::metadata(&path) {
+        Ok(held) => held,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(err(e)),
+    };
+    if !held.is_file() {
+        return Err(format!("{name} is not a file, so it was not removed"));
+    }
+    if held.permissions().readonly() {
+        return Err(format!("{name} is read-only, so it was not removed"));
+    }
+    // What it holds is compared and never reported: not in the refusal, not anywhere.
+    if fs::read(&path).map_err(err)? != expected.as_bytes() {
+        return Err(format!("{name} has changed, so it was not removed"));
+    }
+    fs::remove_file(&path).map_err(err)?;
+    if let Some(dir) = path.parent().and_then(|dir| File::open(dir).ok()) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// Names of the files directly inside a folder, sorted. Hidden files, folders
 /// and links that lead out of the data folder are left out.
 pub fn list(root: &Path, rel: &str) -> Result<Vec<String>> {
@@ -561,6 +594,89 @@ mod tests {
         write(&s.data, "pages/theirs.md", "new").unwrap();
         assert_eq!(mode("pages/theirs.md"), 0o644);
         assert_eq!(mode("pages"), 0o755);
+    }
+
+    #[test]
+    fn nothing_under_pages_is_ever_readable_by_anyone_else_even_while_it_is_being_written() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let s = Scratch::new("private-watched");
+        let pages = s.data.join("pages");
+        write(&s.data, "pages/first.md", "x").unwrap();
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        // Someone else on the machine, looking at the folder as fast as they can for as long as the writes go on.
+        let watcher = {
+            let (pages, done) = (pages.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                let mut looks = 0u64;
+                while !done.load(Ordering::Relaxed) {
+                    for entry in fs::read_dir(&pages).into_iter().flatten().flatten() {
+                        if let Ok(held) = entry.metadata() {
+                            let mode = held.permissions().mode() & 0o7777;
+                            if mode & 0o077 != 0 {
+                                seen.push(format!("{} {mode:o}", entry.file_name().to_string_lossy()));
+                            }
+                        }
+                    }
+                    looks += 1;
+                }
+                (seen, looks)
+            })
+        };
+        // Long enough texts that the write itself takes a moment, to a few files, over and over.
+        let text = "morning pages ".repeat(40_000);
+        for round in 0..150 {
+            write(&s.data, &format!("pages/day-{}.md", round % 5), &text).unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        let (seen, looks) = watcher.join().unwrap();
+        assert!(looks > 100, "the watcher only looked {looks} times");
+        assert!(seen.is_empty(), "readable by others at some moment: {:?}", &seen[..seen.len().min(5)]);
+    }
+
+    #[test]
+    fn a_file_is_only_removed_if_it_holds_what_was_expected() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("remove");
+        let stub = "---\ndate: 2026-11-17\n---\n";
+        write(&s.data, "days/2026-11-17.md", stub).unwrap();
+        write(&s.data, "days/2026-11-16.md", "---\ndate: 2026-11-16\nmood: 3\n---\n").unwrap();
+
+        // Anything but exactly what is there, and it stays. The refusal names the file and quotes nothing.
+        for expected in ["", "---\ndate: 2026-11-17\n---", "---\ndate: 2026-11-17\n---\n\n", "---\ndate: 2026-11-16\nmood: 3\n---\n"] {
+            assert_eq!(remove(&s.data, "days/2026-11-17.md", expected), Err("2026-11-17.md has changed, so it was not removed".into()));
+        }
+        assert_eq!(read(&s.data, "days/2026-11-17.md").unwrap().as_deref(), Some(stub));
+        // Exactly what is there, and it goes. Its neighbour and its folder stay.
+        remove(&s.data, "days/2026-11-17.md", stub).unwrap();
+        assert_eq!(Scratch::names(&s.data.join("days")), ["2026-11-16.md"]);
+        // Already gone is gone: nothing to do, whatever was expected.
+        remove(&s.data, "days/2026-11-17.md", stub).unwrap();
+        remove(&s.data, "months/2026-11.md", "x").unwrap();
+
+        // A folder is not a file, and a locked file is left locked.
+        assert_eq!(remove(&s.data, "days", ""), Err("days is not a file, so it was not removed".into()));
+        let locked = s.data.join("days/2026-11-16.md");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o444)).unwrap();
+        assert_eq!(
+            remove(&s.data, "days/2026-11-16.md", "---\ndate: 2026-11-16\nmood: 3\n---\n"),
+            Err("2026-11-16.md is read-only, so it was not removed".into())
+        );
+        assert_eq!(Scratch::names(&s.data.join("days")), ["2026-11-16.md"]);
+    }
+
+    #[test]
+    fn nothing_outside_the_data_folder_can_be_removed() {
+        let s = Scratch::new("remove-outside");
+        symlink(&s.outside, s.data.join("out")).unwrap();
+        symlink(s.outside.join("secret.txt"), s.data.join("secret.md")).unwrap();
+        for rel in ["../outside/secret.txt", "out/secret.txt", "secret.md", "", "/etc/hosts", "days/../../outside/secret.txt"] {
+            assert_eq!(remove(&s.data, rel, "outside"), Err(OUTSIDE.into()), "{rel:?}");
+        }
+        assert_eq!(s.secret(), "outside");
+        // A data folder that isn't there has nothing in it to remove.
+        remove(&s.base.join("nowhere"), "days/a.md", "x").unwrap();
     }
 
     #[test]
