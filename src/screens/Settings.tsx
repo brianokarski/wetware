@@ -284,7 +284,12 @@ function IntervalsRows(props: { habits: Habit[]; withheld: number; onTest: () =>
           Save
         </button>
         {stored && (
-          <button type="button" className="action" disabled={test.status === "running"} onClick={runTest}>
+          <button
+            type="button"
+            className="action"
+            aria-disabled={test.status === "running" || undefined}
+            onClick={() => test.status !== "running" && runTest()}
+          >
             Test connection
           </button>
         )}

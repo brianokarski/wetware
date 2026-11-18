@@ -1003,15 +1003,20 @@ const scenarios = [
         window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
         window.wetware.slowFetches(500);
       });
+      const asked = (await t.fetches()).length;
       await t.page.click(".month .action");
       await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Syncing");
-      assert.equal(await t.page.$eval(".month .action", (el) => el.disabled), true);
+      // Sync can't be started twice: pressing it again while it runs asks for nothing more.
+      assert.equal(await t.page.$eval(".month .action", (el) => el.getAttribute("aria-disabled")), "true");
+      await t.page.click(".month .action");
       await t.click("meditate", 17);
       assert.equal(await t.state("meditate", 17), "done");
       await t.click("weight", 17);
       await t.page.keyboard.type("170");
       await t.told("Sync: 1 day updated.");
       assert.equal(await t.syncStatus(), "Last synced 09:41");
+      assert.equal(await t.page.$eval(".month .action", (el) => el.getAttribute("aria-disabled")), null);
+      assert.equal((await t.fetches()).length, asked + 3);
       await t.stateIs("run", 17, "done");
       // The entry is still open with what was typed, and saves as usual.
       assert.equal(await t.page.$eval(".grid-input", (el) => el.value), "170");
@@ -1147,6 +1152,41 @@ const scenarios = [
       await t.told("Sync: 11 days updated.");
       await t.stateIs("run", 17, "done");
       assert.equal(await t.problem(), "Sync: 11 days updated.");
+    },
+  },
+  {
+    name: "sync-called-off",
+    about: "changing the data folder calls off a sync under way: what it fetched is not written into the new folder",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      await t.told("Sync: 24 days updated.");
+      // Something for a sync to put back, and fetches slow enough to change folders in the middle of one.
+      await t.page.evaluate(() => {
+        window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
+        window.wetware.slowFetches(400);
+      });
+      await t.page.click(".month .action");
+      await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Syncing");
+      await t.nav("Settings");
+      await t.page.evaluate(() => window.wetware.slowFetches(0));
+      await t.page.click(".row-value .action"); // Choose: the shell switches to another folder
+      // The sync for the folder now open runs once the old one has wound down, and it is the one that writes.
+      await t.page.waitForFunction(() => window.wetware.fetches().length === 9);
+      await t.page.waitForFunction(() => /^run: true$/m.test(window.wetware.read("days/2026-11-17.md")));
+      const calls = await t.page.evaluate(() => window.wetware.calls());
+      const isFetch = (call) => call === "intervals_fetch" || call === "weather_fetch";
+      const chosen = calls.lastIndexOf("choose_data_root");
+      const fetches = calls.map((call, i) => (isFetch(call) ? i : -1)).filter((i) => i >= 0);
+      assert.equal(fetches.length, 9);
+      const newSync = fetches[6];
+      assert.ok(newSync > chosen, "the new folder's sync began before the folder was chosen");
+      const strays = calls.slice(chosen, newSync).filter((call) => call === "data_write");
+      assert.deepEqual(strays, [], "the sync that was called off wrote to the new folder");
+      assert.ok(calls.slice(newSync).includes("data_write"), "the new folder's sync wrote nothing");
+      await t.nav("Month");
+      await t.ready();
+      await t.stateIs("run", 17, "done");
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
     },
   },
   {

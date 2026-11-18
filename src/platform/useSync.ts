@@ -88,7 +88,8 @@ export function useSync({ fs, sources, habits, settings, notify, settle }: Optio
           withheld: report.withheld,
         }));
         if (after.last_synced_ms !== before.last_synced_ms || after.intervals_hint_shown !== before.intervals_hint_shown) {
-          await syncState.set(after);
+          // The sync itself is done and its files are written. Only the app's memory of it is at stake here.
+          await syncState.set(after).catch((e) => notify(SYNC_NOTICE, `${message ?? "Sync: done."} The time of this sync could not be kept. ${reason(e)}`));
         }
       } catch (e) {
         // Sources and day files failing are in the report. This is the shell itself not answering.

@@ -250,7 +250,8 @@ select {
   color: var(--color-gray);
 }
 
-.action:disabled {
+.action:disabled,
+.action[aria-disabled="true"] {
   cursor: default;
   color: var(--color-gray-light);
 }

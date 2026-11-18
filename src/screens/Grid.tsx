@@ -273,7 +273,8 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
           <span className="muted">{when}</span>
         </span>
         <span className="meta-group mono">
-          <button type="button" className="action" disabled={sync.running} onClick={onSync}>
+          {/* Not `disabled` while a sync runs: that would drop keyboard focus. A press then does nothing. */}
+          <button type="button" className="action" aria-disabled={sync.running || undefined} onClick={() => !sync.running && onSync()}>
             Sync
           </button>
           <span className="sync-status muted" role="status">
