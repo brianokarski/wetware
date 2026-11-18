@@ -130,13 +130,18 @@ describe("S2: an unusable _sources is replaced, and nothing else", () => {
   it.each([
     ["empty", "_sources:\n", "_sources:\n  mood: manual\n"],
     ["plain text", "_sources: oops\n", "_sources:\n  mood: manual\n"],
-    ["a block list", "_sources:\n  - a\n  - b\n", "_sources:\n  mood: manual\n"],
     ["a flow list (it stays flow style)", "_sources: [a, b]\n", "_sources: {mood: manual}\n"],
   ])("%s", (_name, line, replaced) => {
     const raw = `---\ndate: 2026-11-17\nhex: 0x1F # keep\n${line}_synced_at: x\n---\nb\n`;
     const next = updateDayFile(raw, DATE, { sources: { mood: "manual" } });
     expect(next).toBe(raw.replace(line, replaced));
     expect(parseDay(next, DATE).sources).toEqual({ mood: "manual" });
+  });
+
+  it("refuses to replace a _sources list written out over lines", () => {
+    const raw = "---\ndate: 2026-11-17\n_sources:\n  - a # mine\n  - b\n---\nb\n";
+    expect(() => updateDayFile(raw, DATE, { sources: { mood: "manual" } })).toThrow(DayFileError);
+    expect(updateDayFile(raw, DATE, mood4)).toBe(raw.replace("_sources:", "mood: 4\n_sources:"));
   });
 
   it("reads an unusable _sources as no sources", () => {
@@ -152,6 +157,20 @@ describe("S2: an unusable _sources is replaced, and nothing else", () => {
   it("removing a source that isn't there changes nothing", () => {
     const raw = "---\ndate: 2026-11-17\n_sources: oops\n---\nb\n";
     expect(updateDayFile(raw, DATE, { sources: { mood: undefined } })).toBe(raw);
+  });
+});
+
+describe("flow-style frontmatter", () => {
+  it("is edited between its braces (review S-1, fourth input)", () => {
+    const raw = "---\n{mood: 3, weight_lb: 171.20, hex: 0x1F}\n---\nbody\n";
+    expect(updateDayFile(raw, DATE, { values: { run: true }, sources: { run: "manual" } }))
+      .toBe("---\n{date: 2026-11-17, mood: 3, weight_lb: 171.20, hex: 0x1F, run: true, _sources: {run: manual}}\n---\nbody\n");
+  });
+
+  it("keeps the comment beside tags when a tag is added or removed (review N-1)", () => {
+    const raw = "---\ndate: 2026-11-17\ntags: [travel] # trip\nhex: 0x1F\n---\n";
+    expect(updateDayFile(raw, DATE, { values: { tags: ["travel", "sick"] } })).toBe(raw.replace("[travel]", "[travel, sick]"));
+    expect(updateDayFile(raw, DATE, { values: { tags: [] } })).toBe(raw.replace("[travel]", "[]"));
   });
 });
 
@@ -189,6 +208,20 @@ describe("S3: the body round trip", () => {
     expect(updateDayFile("---\ndate: 2026-11-17\n---\n", DATE, { notes: "first\n" })).toBe("---\ndate: 2026-11-17\n---\n\nfirst\n");
     expect(updateDayFile(null, DATE, { notes: "first\n" })).toBe("---\ndate: 2026-11-17\n---\n\nfirst\n");
     expect(updateDayFile("---\ndate: 2026-11-17\n---\nold\n", DATE, { notes: "new\n" })).toBe("---\ndate: 2026-11-17\n---\nnew\n");
+  });
+
+  it.each([
+    ["no blank line after the fence", "---\nmood: 1\n---\nold\n"],
+    ["a blank line after the fence", "---\nmood: 1\n---\n\nold\n"],
+    ["no body", "---\nmood: 1\n---\n"],
+    ["CRLF", "---\r\nmood: 1\r\n---\r\nold\r\n"],
+    ["no file", null],
+  ])("notes read back as they were written, and saving them again changes nothing (review N-3): %s", (_name, raw) => {
+    for (const notes of ["\nnew\n", "\n\nnew\n", "new\n", "new", "\n", "  indented\n\nmore\n"]) {
+      const written = updateDayFile(raw, DATE, { notes });
+      expect(parseDay(written, DATE).notes).toBe(notes);
+      expect(updateDayFile(written, DATE, { notes })).toBe(written);
+    }
   });
 
   it("emptied notes leave no body", () => {

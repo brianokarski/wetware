@@ -190,8 +190,11 @@ function nextBody(current: string, patch: DayPatch, eol: Eol): string {
   }
   if (patch.notes === undefined || patch.notes === toNotes(current)) return current;
   if (patch.notes === "") return "";
-  // Put back the blank line the notes view hides. A first note gets one too.
-  const blank = /^\r?\n/.exec(current)?.[0] ?? (current === "" ? eol : "");
+  // Put back the blank line the notes view hides. A first note gets one too,
+  // and so do notes that begin with a blank line of their own: without it,
+  // their first line break would read back as the hidden one.
+  const startsBlank = /^\r?\n/.test(patch.notes);
+  const blank = /^\r?\n/.exec(current)?.[0] ?? (current === "" || startsBlank ? eol : "");
   return blank + patch.notes.replace(/\r?\n/g, eol);
 }
 
@@ -216,7 +219,8 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
   }
   for (const [key, source] of Object.entries(patch.sources ?? {})) {
     if (source === undefined) ops.push({ op: "delete", path: ["_sources", key] });
-    // If `_sources` is missing, empty or not a map, this replaces it with one.
+    // A `_sources` that is missing, empty or a plain value is replaced by a map.
+    // One that is a list written out over lines is refused instead.
     else ops.push({ op: "set", path: ["_sources", key], value: source, before: ["_synced_at"] });
   }
   if (patch.syncedAt !== undefined) ops.push({ op: "set", path: ["_synced_at"], value: patch.syncedAt });
