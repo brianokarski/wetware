@@ -100,6 +100,8 @@ const state = {
   listError: null as string | null,
   /** Every command the app has called, in order. */
   calls: [] as string[],
+  /** What each command was sent and what it answered, as text, for checking where a piece of text has been. */
+  traffic: [] as { command: string; path: string; sent: string; answered: string }[],
 };
 
 /** The same rule as the shell: a relative path of plain names. */
@@ -138,6 +140,14 @@ const delay = (delays: Map<string, number>, path: string) => wait(delays.get(pat
 mockIPC(async (command, payload) => {
   const args = (payload ?? {}) as Record<string, unknown>;
   state.calls.push(command);
+  const entry = { command, path: typeof args.path === "string" ? args.path : "", sent: JSON.stringify(args), answered: "" };
+  state.traffic.push(entry);
+  const answer = await answerTo(command, args);
+  entry.answered = JSON.stringify(answer ?? null);
+  return answer;
+});
+
+async function answerTo(command: string, args: Record<string, unknown>): Promise<unknown> {
   switch (command) {
     case "get_data_root":
       return state.root === null ? null : { path: state.root, id: state.folderId };
@@ -213,7 +223,7 @@ mockIPC(async (command, payload) => {
     default:
       throw `Unknown command: ${command}`;
   }
-});
+}
 
 const current = () => folders.get(state.root ?? SUGGESTED_ROOT)!;
 const set = <K, V>(map: Map<K, V>, key: K, value: V | null) => void (value === null ? map.delete(key) : map.set(key, value));
@@ -242,6 +252,14 @@ const harness = {
   slowRead: (path: string, ms: number | null) => set(state.readDelays, path, ms),
   slowWrite: (path: string, ms: number | null) => set(state.writeDelays, path, ms),
   calls: () => [...state.calls],
+  /** The commands, as "name path", that were sent `text` in their arguments, and those that answered with it. */
+  sent: (text: string) => state.traffic.filter((entry) => entry.sent.includes(text)).map((entry) => `${entry.command} ${entry.path}`.trim()),
+  answered: (text: string) => state.traffic.filter((entry) => entry.answered.includes(text)).map((entry) => `${entry.command} ${entry.path}`.trim()),
+  /** Every file whose text holds `text`, in every folder the mock knows, open or not: "suggested: path" or "other: path". */
+  filesHolding: (text: string) =>
+    ([["suggested", SUGGESTED_ROOT], ["other", OTHER_ROOT]] as const).flatMap(([name, root]) =>
+      [...folders.get(root)!].filter(([, body]) => body.includes(text)).map(([path]) => `${name}: ${path}`).sort(),
+    ),
   /** The fetches asked for so far: "wellness 2026-10-25 2026-11-17", "weather 37.8 -122.27 2026-10-25 2026-11-17". */
   fetches: () => [...state.fetches],
   failIntervals: (problem: object | null) => void (state.intervalsProblem = problem),
