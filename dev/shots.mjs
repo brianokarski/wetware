@@ -2414,6 +2414,12 @@ const scenarios = [
       });
       assert.ok(title.prompt.left > title.name.right && title.prompt.right <= title.width, "the line runs into the month's name or off the window");
       assert.ok(title.prompt.top >= title.name.top && title.prompt.bottom <= title.grid.top, "the line is not on the month's name's own line");
+      // It is about today, and is on the month today is in: another month says nothing of anyone's pages.
+      await t.page.click(".month-nav button:first-child");
+      await t.ready();
+      assert.equal(await t.count(".pages-prompt"), 0);
+      await t.page.click(".month-nav button:nth-child(2)");
+      await t.ready();
       await t.page.click(".pages-prompt .action");
       await t.page.waitForSelector(".room-field");
       await t.page.evaluate(() => document.fonts.ready);
@@ -2529,10 +2535,15 @@ const scenarios = [
       const sizes = () =>
         t.page.evaluate(() => {
           const field = document.querySelector(".room-field");
+          // How tall the field's text is when the field is given no height of its own to stretch to.
+          field.style.height = "0";
+          const natural = field.scrollHeight;
+          field.style.height = "";
           return {
             field: field.getBoundingClientRect().height,
             copy: document.querySelector(".room-copy").getBoundingClientRect().height,
             inside: field.scrollHeight,
+            natural,
             line: parseFloat(getComputedStyle(field).lineHeight),
             sideways: document.documentElement.scrollWidth > window.innerWidth,
             animations: document.getAnimations().length,
@@ -2563,6 +2574,8 @@ const scenarios = [
       // The field is as tall as its text, with no scrolling of its own: the window scrolls, and never sideways.
       const size = await sizes();
       assert.ok(Math.abs(size.field - size.copy) < 1 && Math.abs(size.field - size.inside) < 1, `the field is ${size.field}px tall, its text ${size.inside}px, its copy ${size.copy}px`);
+      // The unseen copy the marks are measured on is set as the field's own text is: the same lines, so the same height.
+      assert.ok(Math.abs(size.natural - size.copy) < 1, `the field's text is ${size.natural}px tall by itself, the copy the marks are measured on ${size.copy}px`);
       assert.ok(size.field > 30 * size.line, "760 words came to fewer than 30 lines");
       assert.ok(!size.sideways, "horizontal scroll");
       // The line being written is in the window, clear of its bottom edge, and the strip is still in sight above.
@@ -2881,8 +2894,13 @@ const scenarios = [
       }
       // The count is the one thing that left: a number, in the day file.
       assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 20$/m);
-      // The message line holds what the sync had to say, and nothing of the room's.
+      // The message line holds what the sync had to say, and nothing of the room's: not on top, and not underneath
+      // when each message in turn is dismissed.
       assert.equal(await t.problem(), "Sync: nothing new.");
+      for (let said = await t.problem(); said !== null; said = await t.problem()) {
+        for (const part of PARTS) assert.ok(!said.includes(part), `"${part}" is on the message line`);
+        await t.page.click(".notice-dismiss");
+      }
     },
   },
   {
@@ -2973,6 +2991,21 @@ const scenarios = [
       await t.page.keyboard.type(" Still mine.");
       await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("Still mine."), {}, PAGES);
 
+      // The window comes back to the front over typing that is not saved yet, with the file changed meanwhile:
+      // the typing is not thrown away for the file's text. The room asks, and writes nothing.
+      const fifth = await t.file(PAGES);
+      await outside(`${fifth} From elsewhere.`);
+      await t.page.keyboard.type(" Not saved yet.");
+      await front();
+      await roomSays("was changed outside Wetware");
+      assert.ok((await t.room()).text.endsWith("Still mine. Not saved yet."), (await t.room()).text);
+      assert.equal(await t.file(PAGES), `${fifth} From elsewhere.`);
+      await choose("Take the file's text");
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 0);
+      assert.equal((await t.room()).text, `${fifth} From elsewhere.`);
+      assert.equal(await t.file(PAGES), `${fifth} From elsewhere.`);
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+
       // Asked, and then the other app puts the file back as it was: there is nothing left to ask, and the typing is saved.
       const fourth = await t.file(PAGES);
       await outside(`${fourth} Elsewhere.`);
@@ -2980,7 +3013,7 @@ const scenarios = [
       await roomSays("was changed outside Wetware");
       await outside(fourth);
       await front();
-      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("Still mine. Here."), {}, PAGES);
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("From elsewhere. Here."), {}, PAGES);
       assert.equal((await t.room()).said, null);
       assert.deepEqual((await t.room()).actions, []);
       await t.page.keyboard.press("Escape");
@@ -3039,14 +3072,15 @@ const scenarios = [
       assert.equal((await t.room()).said, "The pages are saved. The word count could not be written to days/2026-11-12.md. Frontmatter: Invalid YAML: Map keys must be unique (line 4).");
       assert.equal(await t.file("pages/2026-11-12.md"), "Kept, uncounted.");
       assert.equal(await t.file("days/2026-11-12.md"), broken);
-      // The day file put right while the room is open: the next save writes the count, and the message goes.
+      // The day file put right while the room is open, and nothing more typed: the count is still owed, and leaving
+      // writes it. The month that comes back has it, and the message has gone.
       await t.page.evaluate(() => window.wetware.write("days/2026-11-12.md", "---\ndate: 2026-11-12\nmood: 2\n---\n"));
-      await t.page.keyboard.type(" Counted now.");
-      await t.page.waitForFunction(() => /^morning_pages_words: 4$/m.test(window.wetware.read("days/2026-11-12.md")));
-      await t.saved();
-      assert.equal((await t.room()).said, null);
       await t.page.keyboard.press("Escape");
       await t.ready();
+      assert.equal(await t.label("morning_pages", 12), "Morning pages, Thursday, November 12, 2026: 2 of 750 words");
+      assert.match(await t.file("days/2026-11-12.md"), /^morning_pages_words: 2$/m);
+      assert.equal(await t.file("pages/2026-11-12.md"), "Kept, uncounted.");
+      assert.equal(await t.problem(), null);
 
       // A pages file that can't be read: the room says which file and why, and offers nothing to type into, so nothing is written over it.
       await t.page.evaluate(() => window.wetware.failRead("pages/2026-11-11.md", "stream did not contain valid UTF-8"));
