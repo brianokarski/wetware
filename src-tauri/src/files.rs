@@ -74,6 +74,10 @@ fn resolve(real_root: &Path, rel: &str) -> Result<PathBuf> {
             Err(e) => return Err(err(e)),
         }
     }
+    // A link back to the data folder itself names nothing inside it.
+    if path == real_root {
+        return Err(OUTSIDE.into());
+    }
     Ok(path)
 }
 
@@ -159,7 +163,9 @@ fn create_temp(
 
 /// Write via a temp file and rename, so neither a crash nor a second write can
 /// leave a half-written file. The temp file has a name of its own, is flushed
-/// to disk before the rename, and is removed if anything fails.
+/// to disk before the rename, and is removed if anything fails. Replacing a
+/// file keeps its permissions; its extended attributes (Finder tags) are not
+/// carried over.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     write_atomic_with(path, contents, unique_suffix)
 }
@@ -169,8 +175,22 @@ fn write_atomic_with(path: &Path, contents: &[u8], suffix: impl FnMut() -> Strin
     let name = path.file_name().ok_or("Path has no file name")?;
     fs::create_dir_all(dir).map_err(err)?;
 
+    // The new file takes the place of the old one, so it keeps the old one's
+    // permissions. A file marked read-only is left alone: renaming over it
+    // would work, and would quietly undo the lock.
+    let permissions = match fs::metadata(path) {
+        Ok(existing) if existing.permissions().readonly() => {
+            return Err(format!("{} is read-only, so it was not changed", name.to_string_lossy()));
+        }
+        Ok(existing) if existing.is_file() => Some(existing.permissions()),
+        _ => None,
+    };
+
     let (mut file, temp) = create_temp(dir, name, suffix).map_err(err)?;
-    let written = file.write_all(contents).and_then(|()| file.sync_all());
+    let written = file
+        .write_all(contents)
+        .and_then(|()| permissions.map_or(Ok(()), |p| file.set_permissions(p)))
+        .and_then(|()| file.sync_all());
     drop(file);
     let renamed = written.and_then(|()| fs::rename(&temp, path));
     if renamed.is_err() {
@@ -394,19 +414,77 @@ mod tests {
     #[test]
     fn writes_in_flight_together_each_use_their_own_temp_file() {
         let s = Scratch::new("together");
-        let threads: Vec<_> = (0..16)
-            .map(|i| {
-                let root = s.data.clone();
-                std::thread::spawn(move || write(&root, "habits.yaml", &format!("{i}").repeat(4096)))
+        // One distinct character per writer, so a file holding anything but
+        // 4096 copies of a single one of them was pieced together from two writes.
+        let writers: Vec<String> = ('a'..='p').map(|c| c.to_string().repeat(4096)).collect();
+        let threads: Vec<_> = writers
+            .iter()
+            .map(|contents| {
+                let (root, contents) = (s.data.clone(), contents.clone());
+                std::thread::spawn(move || write(&root, "habits.yaml", &contents))
             })
             .collect();
         for thread in threads {
             thread.join().unwrap().unwrap();
         }
         let text = fs::read_to_string(s.data.join("habits.yaml")).unwrap();
-        assert_eq!(text.len() % 4096, 0);
-        assert!(text.chars().all(|c| c == text.chars().next().unwrap()), "a half-written file");
+        assert!(writers.contains(&text), "a half-written file");
         assert_eq!(Scratch::names(&s.data), ["habits.yaml"]);
+    }
+
+    #[test]
+    fn a_link_to_the_data_folder_itself_is_refused_before_anything_is_written() {
+        let s = Scratch::new("selflink");
+        symlink(&s.data, s.data.join("self")).unwrap();
+        symlink(".", s.data.join("dot")).unwrap();
+        for rel in ["self", "dot", "self/self", "self/dot"] {
+            assert_eq!(write(&s.data, rel, "x").unwrap_err(), OUTSIDE, "write {rel:?}");
+            assert_eq!(read(&s.data, rel).unwrap_err(), OUTSIDE, "read {rel:?}");
+            assert_eq!(list(&s.data, rel).unwrap_err(), OUTSIDE, "list {rel:?}");
+        }
+        // Through the link and on to a real file is still inside, and still works.
+        write(&s.data, "self/habits.yaml", "x").unwrap();
+        assert_eq!(read(&s.data, "habits.yaml").unwrap().as_deref(), Some("x"));
+        assert_eq!(Scratch::names(&s.base), ["data", "outside"]);
+        assert_eq!(Scratch::names(&s.data), ["dot", "habits.yaml", "self"]);
+    }
+
+    #[test]
+    fn replacing_a_file_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("mode");
+        let mode = |name: &str| fs::metadata(s.data.join(name)).unwrap().permissions().mode() & 0o7777;
+        fs::create_dir(s.data.join("pages")).unwrap();
+        for (name, bits) in [("pages/private.md", 0o600), ("shared.md", 0o664), ("script.md", 0o755)] {
+            fs::write(s.data.join(name), "old").unwrap();
+            fs::set_permissions(s.data.join(name), fs::Permissions::from_mode(bits)).unwrap();
+            write(&s.data, name, "new").unwrap();
+            assert_eq!(fs::read_to_string(s.data.join(name)).unwrap(), "new");
+            assert_eq!(mode(name), bits, "{name}");
+        }
+        // A new file gets the usual permissions, whatever its neighbours have.
+        write(&s.data, "pages/fresh.md", "x").unwrap();
+        assert_eq!(mode("pages/fresh.md") & 0o600, 0o600);
+    }
+
+    #[test]
+    fn a_read_only_file_is_refused_not_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("readonly");
+        let file = s.data.join("habits.yaml");
+        fs::write(&file, "locked").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let refusal = write(&s.data, "habits.yaml", "changed").unwrap_err();
+        assert_eq!(refusal, "habits.yaml is read-only, so it was not changed");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "locked");
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o7777, 0o444);
+        assert_eq!(Scratch::names(&s.data), ["habits.yaml"]);
+        // It can still be read, and unlocking it makes it writable again.
+        assert_eq!(read(&s.data, "habits.yaml").unwrap().as_deref(), Some("locked"));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        write(&s.data, "habits.yaml", "changed").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "changed");
     }
 
     #[test]
