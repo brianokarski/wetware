@@ -101,6 +101,12 @@ const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
 const WHOLE = /^\+?\d+$/;
 
 /**
+ * The largest number a cell takes, either side of zero. Six digits is more
+ * than a day's weight, minutes, steps or words needs, and can still be shown.
+ */
+export const MAX_CELL_NUMBER = 999_999;
+
+/**
  * What was typed into a cell, as a value for a habit of that type. An empty
  * field clears the cell. `ok: false` means the input is invalid and nothing
  * should be written.
@@ -111,11 +117,11 @@ export function parseCellInput(type: HabitType, text: string): Parsed<number | n
   const invalid = { ok: false } as const;
   if (type === "number") {
     const value = DECIMAL.test(trimmed) ? Number(trimmed) : NaN;
-    return Number.isFinite(value) ? { ok: true, value } : invalid;
+    return Math.abs(value) <= MAX_CELL_NUMBER ? { ok: true, value } : invalid;
   }
   if (type === "scale" || type === "duration" || type === "progress") {
     const value = WHOLE.test(trimmed) ? Number(trimmed) : NaN;
-    if (!Number.isSafeInteger(value)) return invalid;
+    if (!(value <= MAX_CELL_NUMBER)) return invalid;
     if (type === "scale" && (value < 1 || value > 5)) return invalid;
     return { ok: true, value };
   }
@@ -127,9 +133,9 @@ export function parseCellInput(type: HabitType, text: string): Parsed<number | n
 function fits(habit: Habit, value: CellValue): boolean {
   if (habit.type === "check" || habit.type === "tag") return typeof value === "boolean";
   if (value === null) return true;
-  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  if (typeof value !== "number" || !(Math.abs(value) <= MAX_CELL_NUMBER)) return false;
   if (habit.type === "number") return true;
-  return Number.isSafeInteger(value) && (habit.type === "scale" ? value >= 1 && value <= 5 : value >= 0);
+  return Number.isInteger(value) && (habit.type === "scale" ? value >= 1 && value <= 5 : value >= 0);
 }
 
 /**
@@ -178,26 +184,55 @@ export async function writeCell(fs: DataFs, habit: Habit, date: string, value: C
 
 /**
  * Every day of a month, keyed by date. A day with no file is an empty day.
- * One listing and then only the files that exist are read.
+ * One listing and then only the files that exist are read. A file that can't
+ * be read (not text, no permission) doesn't stop the month: that day comes
+ * back empty with `error` set, like a file that can't be parsed.
  */
 export async function loadMonth(fs: DataFs, ym: YearMonth): Promise<Record<string, Day>> {
   const present = new Set(await fs.list(DAYS_DIR));
-  const days = await Promise.all(
-    monthDates(ym).map((date) => (present.has(`${date}.md`) ? readDay(fs, date) : parseDay(null, date))),
-  );
+  const load = async (date: string): Promise<Day> => {
+    if (!present.has(`${date}.md`)) return parseDay(null, date);
+    try {
+      return await readDay(fs, date);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      return { ...parseDay(null, date), error: `The file could not be read: ${reason}.` };
+    }
+  };
+  const days = await Promise.all(monthDates(ym).map(load));
   return Object.fromEntries(days.map((day) => [day.date, day]));
 }
 
+/** Thousands, millions and so on, for numbers too long to show in full. */
+const UNITS: [string, number][] = [["k", 1e3], ["M", 1e6], ["B", 1e9], ["T", 1e12]];
+/** How far a shortened number may be from the real one, as a share of it. */
+const ROUNDING_ALLOWED = 0.05;
+
 /**
  * A number in at most `width` characters, for a narrow cell: decimals go
- * first, then thousands become "k". The full value goes in the cell's label.
+ * first, then thousands become "k" and millions "M". It never says something
+ * that isn't so: a form that would be off by more than a twentieth is not
+ * used, and if nothing honest fits, the shortest honest form is returned even
+ * though it is longer than asked. The full value goes in the cell's label.
  */
 export function shortNumber(value: number, width = 4): string {
-  const candidates = [String(value), String(Number(value.toFixed(1))), String(Math.round(value))];
-  const fits = candidates.find((text) => text.length <= width);
-  if (fits !== undefined) return fits;
-  const thousands = `${Math.round(value / 1000)}k`;
-  return thousands.length <= width ? thousands : `${Math.round(value / 1e6)}M`;
+  const text = (n: number) => String(n).replace("e+", "e");
+  const forms = [text(value), text(Number(value.toFixed(1))), text(Math.round(value))];
+  for (const [suffix, unit] of UNITS) {
+    for (const count of [Math.round(value / unit), Number((value / unit).toFixed(1))]) {
+      const close = Math.abs(count * unit - value) <= Math.abs(value) * ROUNDING_ALLOWED;
+      if (count !== 0 && close) forms.push(`${text(count)}${suffix}`);
+    }
+  }
+  // Past the trillions the units run out: powers of ten, as JavaScript itself writes them from 1e21.
+  if (Math.abs(value) >= UNITS[UNITS.length - 1][1] * 1000) {
+    for (const digits of [0, 1]) {
+      const power = value.toExponential(digits).replace("e+", "e").replace(".0e", "e");
+      if (Math.abs(Number(power) - value) <= Math.abs(value) * ROUNDING_ALLOWED) forms.push(power);
+    }
+  }
+  const fits = forms.find((form) => form.length <= width);
+  return fits ?? forms.reduce((best, form) => (form.length < best.length ? form : best));
 }
 
 /** What a cell holds, in words, for its accessible label. Plain statements: an empty day is just empty. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  cellPatch, cellSource, cellState, cellValue, dayTags, describeCell, habitHint, loadMonth, memoryFs, monthCount,
+  cellPatch, cellSource, cellState, cellValue, DayFileError, dayTags, describeCell, habitHint, loadMonth, memoryFs, monthCount,
   parseCellInput, parseDay, parseHabits, shortNumber, withPatch, writeCell, type Day, type Habit,
 } from "../src/data";
 
@@ -200,6 +200,19 @@ describe("parsing what was typed into a cell", () => {
     expect(parseCellInput(type, text)).toEqual({ ok: false });
   });
 
+  it("caps what can be typed at six digits, either side of zero (review N-4)", () => {
+    expect(parseCellInput("number", "999999")).toEqual({ ok: true, value: 999999 });
+    expect(parseCellInput("number", "-999999")).toEqual({ ok: true, value: -999999 });
+    expect(parseCellInput("number", "999999.5")).toEqual({ ok: false });
+    expect(parseCellInput("number", "1000000")).toEqual({ ok: false });
+    expect(parseCellInput("number", "-1000000")).toEqual({ ok: false });
+    expect(parseCellInput("number", "99999999999999999999")).toEqual({ ok: false });
+    expect(parseCellInput("number", "9".repeat(400))).toEqual({ ok: false });
+    expect(parseCellInput("duration", "999999")).toEqual({ ok: true, value: 999999 });
+    expect(parseCellInput("duration", "1000000")).toEqual({ ok: false });
+    expect(parseCellInput("progress", "1000000")).toEqual({ ok: false });
+  });
+
   it("an empty field clears the cell, for the types that are typed", () => {
     for (const type of ["number", "scale", "duration", "progress"] as const) {
       expect(parseCellInput(type, "")).toEqual({ ok: true, value: null });
@@ -307,6 +320,46 @@ describe("writing a cell", () => {
     expect(dayTags(saved)).toEqual([]);
   });
 
+  it("tags stay tags: [..] through on, off and on again (review N-2)", async () => {
+    const fs = memoryFs({ [FILE]: BASE.replace("tags: [sick] # why\n", "") });
+    const line = () => fs.files.get(FILE)!.split("\n").filter((l) => l.startsWith("tags") || l.startsWith("  -"));
+    await writeCell(fs, habit("travel"), TODAY, true);
+    expect(line()).toEqual(["tags: [travel]"]);
+    await writeCell(fs, habit("travel"), TODAY, false);
+    expect(line()).toEqual(["tags: []"]);
+    await writeCell(fs, habit("travel"), TODAY, true);
+    expect(line()).toEqual(["tags: [travel]"]);
+    await writeCell(fs, habit("travel"), TODAY, false);
+    await writeCell(fs, habit("travel"), TODAY, true);
+    expect(fs.files.get(FILE)).toBe(BASE.replace("tags: [sick] # why", "tags: [travel]"));
+  });
+
+  it("removing the last item of a list written over lines leaves tags: [], and the next add stays in brackets", async () => {
+    const block = BASE.replace("tags: [sick] # why", "tags: # why\n  - travel");
+    const off = await write("travel", false, block);
+    expect(off.text).toBe(BASE.replace("tags: [sick] # why", "tags: [] # why"));
+    expect((await write("travel", true, off.text)).text).toBe(BASE.replace("tags: [sick] # why", "tags: [travel] # why"));
+    // A list with other items in it keeps its shape.
+    const two = BASE.replace("tags: [sick] # why", "tags:\n  - sick # why\n  - travel");
+    expect((await write("travel", false, two)).text).toBe(BASE.replace("tags: [sick] # why", "tags:\n  - sick # why"));
+  });
+
+  it("refuses a tags value that is a map, leaving the file as it was (review N-3)", async () => {
+    const map = BASE.replace("tags: [sick] # why", "tags:\n  travel: true\n  note: keep me");
+    const flowMap = BASE.replace("tags: [sick] # why", "tags: {travel: true, note: keep me}");
+    for (const raw of [map, flowMap]) {
+      const fs = memoryFs({ [FILE]: raw });
+      await expect(writeCell(fs, habit("travel"), TODAY, true)).rejects.toThrow(DayFileError);
+      await expect(writeCell(fs, habit("travel"), TODAY, false)).rejects.toThrow(/tags has to be a list/);
+      expect(fs.files.get(FILE)).toBe(raw);
+      // Everything else on that day can still be written.
+      await writeCell(fs, habit("meditate"), TODAY, true);
+      expect(fs.files.get(FILE)).toContain("meditate: true");
+      expect(fs.files.get(FILE)).toContain("note: keep me");
+    }
+    expect(dayTags(parseDay(map, TODAY))).toEqual([]);
+  });
+
   it("creates the day file when there isn't one", async () => {
     expect((await write("meditate", true, null)).text).toBe("---\ndate: 2026-11-17\nmeditate: true\n_sources:\n  meditate: manual\n---\n");
     expect((await write("travel", true, null)).text).toBe("---\ndate: 2026-11-17\ntags: [travel]\n---\n");
@@ -318,6 +371,7 @@ describe("writing a cell", () => {
     const attempts: [string, boolean | number | null][] = [
       ["mood", 6], ["mood", 0], ["mood", 2.5], ["stretch", -1], ["stretch", 1.5], ["morning_pages", -3],
       ["weight", NaN], ["weight", Infinity], ["weight", true], ["run", 1], ["run", null], ["travel", null], ["travel", 1],
+      ["weight", 1000000], ["weight", -1e21], ["stretch", 1000000], ["morning_pages", 1e9],
     ];
     for (const [id, value] of attempts) {
       await expect(writeCell(fs, habit(id), TODAY, value)).rejects.toThrow(RangeError);
@@ -376,6 +430,41 @@ describe("loading a month", () => {
     expect(Object.values(month).every((d) => Object.keys(d.values).length === 0)).toBe(true);
   });
 
+  it("a day file that can't be read doesn't stop the month (review SF-3)", async () => {
+    const fs = memoryFs({
+      "days/2026-11-04.md": "---\nmood: 2\n---\n",
+      "days/2026-11-05.md": "\uFFFD not text",
+      "days/2026-11-06.md": "---\nmood: 3\n---\n",
+      "days/2026-11-07.md": "also not text",
+    });
+    const read = fs.read;
+    fs.read = async (path) => {
+      if (path === "days/2026-11-05.md") throw "stream did not contain valid UTF-8";
+      if (path === "days/2026-11-07.md") throw new Error("Permission denied (os error 13)");
+      return read(path);
+    };
+    const month = await loadMonth(fs, { year: 2026, month: 11 });
+    expect(Object.keys(month)).toHaveLength(30);
+    expect(month["2026-11-04"].values).toEqual({ mood: 2 });
+    expect(month["2026-11-06"].values).toEqual({ mood: 3 });
+    expect(month["2026-11-05"]).toMatchObject({
+      date: "2026-11-05", values: {}, sources: {}, body: "",
+      error: "The file could not be read: stream did not contain valid UTF-8.",
+    });
+    expect(month["2026-11-07"].error).toBe("The file could not be read: Permission denied (os error 13).");
+    // Nothing is written over a file that couldn't be read.
+    await expect(writeCell(fs, habit("mood"), "2026-11-05", 4)).rejects.toBe("stream did not contain valid UTF-8");
+    expect(fs.files.get("days/2026-11-05.md")).toBe("\uFFFD not text");
+  });
+
+  it("still fails when the folder itself can't be listed", async () => {
+    const fs = memoryFs();
+    fs.list = async () => {
+      throw "Permission denied (os error 13)";
+    };
+    await expect(loadMonth(fs, { year: 2026, month: 11 })).rejects.toBe("Permission denied (os error 13)");
+  });
+
   it("reports a day file that needs fixing without failing the month", async () => {
     const fs = memoryFs({ "days/2026-11-05.md": "---\nmood: 1\nmood: 2\n---\n", "days/2026-11-06.md": "---\nmood: 3\n---\n" });
     const month = await loadMonth(fs, { year: 2026, month: 11 });
@@ -389,10 +478,42 @@ describe("showing a cell", () => {
   it("shortens numbers to fit a narrow cell", () => {
     const cases: [number, string][] = [
       [7.7, "7.7"], [171, "171"], [171.2, "171"], [171.25, "171"], [7.75, "7.75"], [17.75, "17.8"], [0, "0"], [812, "812"], [1034, "1034"],
-      [12345, "12k"], [1234.5, "1235"], [-4.5, "-4.5"], [-12.5, "-12"], [-12.75, "-13"], [99999, "100k"], [2500000, "3M"], [0.125, "0.1"],
+      [12345, "12k"], [1234.5, "1235"], [-4.5, "-4.5"], [-12.5, "-12"], [-12.75, "-13"], [99999, "100k"], [2500000, "2.5M"], [0.125, "0.1"],
+      [999999, "1M"], [-12345, "-12k"], [123456789, "123M"], [5e9, "5B"], [7.2e12, "7T"], [7.4e12, "7.4T"], [1.5e12, "1.5T"],
     ];
     for (const [value, text] of cases) expect(shortNumber(value)).toBe(text);
     expect(shortNumber(171.25, 6)).toBe("171.25");
+  });
+
+  it("never shows a number that is far from the real one, even when nothing honest fits (review N-4)", () => {
+    // Too long for three characters: the shortest honest form, one character over.
+    expect(shortNumber(100000, 3)).toBe("100k");
+    expect(shortNumber(500000, 3)).toBe("500k");
+    expect(shortNumber(1100, 3)).toBe("1100");
+    expect(shortNumber(1500000, 3)).toBe("1.5M");
+    // Close enough to round.
+    expect(shortNumber(999999, 3)).toBe("1M");
+    expect(shortNumber(1049, 3)).toBe("1k");
+    expect(shortNumber(172.4, 3)).toBe("172");
+    // Far beyond anything a habit holds: still a number, not a row of zeros.
+    expect(shortNumber(1e21, 3)).toBe("1e21");
+    expect(shortNumber(1e21)).toBe("1e21");
+    expect(shortNumber(99999999999999999999, 3)).toBe("1e20");
+    expect(shortNumber(-3e15, 4)).toBe("-3e15");
+
+    // Whatever the value and width, what is shown is within 5% of it or is its plain rounding.
+    const read = (text: string) => {
+      const [, number, unit] = /^(-?[\d.]+(?:e-?\d+)?)([kMBT]?)$/.exec(text)!;
+      return Number(number) * { "": 1, k: 1e3, M: 1e6, B: 1e9, T: 1e12 }[unit]!;
+    };
+    for (const value of [0, 1, 9.99, 99.95, 999.5, 1234, 4999, 5000, 50000, 94999, 100000, 250000, 999999, 1e7, 123456789012, 1e15, 1e21, 1e-7, 0.04]) {
+      for (const sign of [1, -1]) {
+        for (const width of [3, 4, 5]) {
+          const shown = read(shortNumber(sign * value, width));
+          expect(Math.abs(shown - sign * value)).toBeLessThanOrEqual(Math.max(0.5, value * 0.05));
+        }
+      }
+    }
   });
 
   it("describes a cell in words for its label, with the full value", () => {

@@ -311,6 +311,12 @@ describe("review N-1: a comment beside a list or map value stays", () => {
       .toBe("_sources:   # where from\n  mood: manual\nz: 1\n");
   });
 
+  it("when a value written over lines is replaced, the comment beside its key stays", () => {
+    expect(patchYaml("tags: # why\n  - travel\n  - sick\nz: 1\n", [set(["tags"], [], { flow: true })])).toBe("tags: [] # why\nz: 1\n");
+    expect(patchYaml("m: # about m\n  a: 1\nz: 1\n", [set(["m"], 5)])).toBe("m: 5 # about m\nz: 1\n");
+    expect(patchYaml("m: # about m\n  a: 1\nz: 1\n", [set(["m"], { b: 2 })])).toBe("m: # about m\n  b: 2\nz: 1\n");
+  });
+
   it("when a value inside it changes", () => {
     const src = "units: {weight: lb, temperature: F} # u\n";
     expect(patchYaml(src, [set(["units", "weight"], "kg")])).toBe(src.replace("lb", "kg"));

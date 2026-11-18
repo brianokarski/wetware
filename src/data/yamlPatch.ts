@@ -511,8 +511,9 @@ function* rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol, flo
     return splice(text, entry.marker!, end, indentLines(withTail, column(text, entry.start), eol, true) + breakAfter);
   };
 
-  if (old?.range && !isBlock(old) && !(isScalar(old) && isBlockScalar(old))) {
-    const valueEnd = isBlank(old) ? entry.marker : Math.max(old.range[1], entry.marker);
+  if (old?.range && !(isScalar(old) && isBlockScalar(old))) {
+    // For a value that starts on the next line, the comment to keep is the one beside the key.
+    const valueEnd = isBlank(old) || isBlock(old) ? entry.marker : Math.max(old.range[1], entry.marker);
     const tail = text.slice(valueEnd, lineEnd(text, valueEnd)).replace(/\r?\n$/, "");
     if (/^[ \t]+#/.test(tail)) yield write(tail);
   }
