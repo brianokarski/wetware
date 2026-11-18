@@ -37,6 +37,8 @@ export interface SyncReport {
   weather: SourceOutcome;
   /** Activities in the range that came through Strava and couldn't be read. */
   withheld: number;
+  /** Records from intervals.icu that couldn't be used: no day or start that can be read, or no type. */
+  unreadable: number;
   /** Days that had something to write and whose file couldn't take it. */
   unwritten: { date: string; reason: string }[];
   /** The sync was called off part-way (`SyncJob.stillWanted`): the days after the last one changed were not looked at. */
@@ -60,6 +62,7 @@ interface Pulled {
   outcome: SourceOutcome;
   wants: Wants;
   withheld: number;
+  unreadable: number;
 }
 
 const NOTHING: Wants = new Map();
@@ -70,23 +73,24 @@ const NOTHING: Wants = new Map();
  */
 async function pullIntervals(sources: SyncSources, habits: Habit[], range: SyncRange): Promise<Pulled> {
   try {
-    const wellness = readWellness(await sources.intervals("wellness", range.oldest, range.newest));
+    const records = readWellness(await sources.intervals("wellness", range.oldest, range.newest));
     const read = readActivities(await sources.intervals("activities", range.oldest, range.newest));
-    const data: IntervalsData = { wellness, ...read };
-    return { outcome: { status: "synced" }, wants: intervalsWants(habits, data, range), withheld: read.withheld };
+    const data: IntervalsData = { ...read, wellness: records.wellness, unreadable: records.unreadable + read.unreadable };
+    return { outcome: { status: "synced" }, wants: intervalsWants(habits, data, range), withheld: data.withheld, unreadable: data.unreadable };
   } catch (e) {
-    return { outcome: failed(e), wants: NOTHING, withheld: 0 };
+    return { outcome: failed(e), wants: NOTHING, withheld: 0, unreadable: 0 };
   }
 }
 
 async function pullWeather(sources: SyncSources, settings: Settings, range: SyncRange): Promise<Pulled> {
   const { latitude, longitude } = settings.location;
-  if (latitude === null || longitude === null) return { outcome: { status: "not_set_up" }, wants: NOTHING, withheld: 0 };
+  const none = { wants: NOTHING, withheld: 0, unreadable: 0 };
+  if (latitude === null || longitude === null) return { ...none, outcome: { status: "not_set_up" } };
   try {
     const weather = readWeather(await sources.weather(latitude, longitude, range.oldest, range.newest));
-    return { outcome: { status: "synced" }, wants: weatherWants(settings.units.temperature, weather, range), withheld: 0 };
+    return { ...none, outcome: { status: "synced" }, wants: weatherWants(settings.units.temperature, weather, range) };
   } catch (e) {
-    return { outcome: failed(e), wants: NOTHING, withheld: 0 };
+    return { ...none, outcome: failed(e) };
   }
 }
 
@@ -144,6 +148,7 @@ export async function runSync({ fs, sources, habits, settings, now, stillWanted 
     intervals: intervals.outcome,
     weather: weather.outcome,
     withheld: intervals.withheld,
+    unreadable: intervals.unreadable,
   };
 }
 

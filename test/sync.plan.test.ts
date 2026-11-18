@@ -14,17 +14,22 @@ const ONE_DAY = { oldest: DAY, newest: DAY };
 /** Source data for one day, from the wellness record and activities given. */
 function oneDay(record: Record<string, unknown> | null, activities: Record<string, unknown>[] = []): IntervalsData {
   return {
-    wellness: readWellness(record ? [{ id: DAY, ...record }] : []),
     ...readActivities(activities.map((activity) => ({ start_date_local: `${DAY}T06:00:00`, ...activity }))),
+    wellness: readWellness(record ? [{ id: DAY, ...record }] : []).wellness,
   };
 }
+
+/** A want as one value: what it says, or that it takes that back. */
+const shown = (want: Want) => ("withdraw" in want ? `withdraw ${want.withdraw}` : want.value);
 
 /** What the sources say about the one day, as `key: value` pairs. */
 function said(habits: Habit[], data: IntervalsData): Record<string, unknown> {
   const wants = intervalsWants(habits, data, ONE_DAY).get(DAY) ?? [];
   for (const want of wants) expect(want.source).toBe("intervals");
-  return Object.fromEntries(wants.map((want) => [want.key, want.value]));
+  return Object.fromEntries(wants.map((want) => [want.key, shown(want)]));
 }
+
+const WITHDRAWN = "withdraw false";
 
 const habit = (fields: Partial<Habit> & Pick<Habit, "id">): Habit => parseHabits(`habits:\n  - ${JSON.stringify(fields)}\n`)[0];
 const run = habit({ id: "run", type: "check", source: "intervals", source_rule: { activity_types: ["Run"], min_minutes: 0 } });
@@ -70,8 +75,8 @@ describe("activity habits", () => {
 
   it("don't count an activity that came through Strava, for or against", () => {
     const stub = { source: "STRAVA", _note: "STRAVA activities are not available via the API" };
-    expect(said([run], oneDay(null, [stub]))).toEqual({});
-    expect(said([run], oneDay(null, [{ ...stub, type: "Run" }]))).toEqual({});
+    expect(said([run], oneDay(null, [stub]))).toEqual({ run: WITHDRAWN });
+    expect(said([run], oneDay(null, [{ ...stub, type: "Run" }]))).toEqual({ run: WITHDRAWN });
     expect(said([run], oneDay(null, [stub, { type: "Run" }]))).toEqual({ run: true });
   });
 
@@ -79,13 +84,30 @@ describe("activity habits", () => {
     const stub = { source: "STRAVA", _note: "STRAVA activities are not available via the API" };
     const lift = habit({ id: "lift", type: "check", source: "intervals", source_rule: { activity_types: ["WeightTraining"] } });
     // The watch was on all day and there is a strength session, but the other thing done that day is a blank.
-    expect(said([run, lift], oneDay({ steps: 9000, restingHR: 50 }, [stub, { type: "WeightTraining" }]))).toEqual({ lift: true, resting_hr: 50 });
-    expect(said([run, lift], oneDay({ steps: 9000 }, [stub]))).toEqual({});
+    expect(said([run, lift], oneDay({ steps: 9000, restingHR: 50 }, [stub, { type: "WeightTraining" }]))).toEqual({ run: WITHDRAWN, lift: true, resting_hr: 50 });
+    expect(said([run, lift], oneDay({ steps: 9000 }, [stub]))).toEqual({ run: WITHDRAWN, lift: WITHDRAWN });
+    // The same for an activity from anywhere that has no type.
+    expect(said([run, lift], oneDay({ steps: 9000 }, [{ source: "GARMIN_CONNECT" }]))).toEqual({ run: WITHDRAWN, lift: WITHDRAWN });
     // Without the stub, the same day does say no.
     expect(said([run, lift], oneDay({ steps: 9000 }, [{ type: "WeightTraining" }]))).toEqual({ run: false, lift: true });
     // A stub on another day says nothing about this one.
     const data = oneDay({ steps: 9000 }, [{ ...stub, start_date_local: "2026-11-16T06:00:00" }]);
     expect(said([run], data)).toEqual({ run: false });
+  });
+
+  it("read min_minutes as a number whether or not it was written in quotes", () => {
+    const quoted = habit({ id: "long_run", type: "check", source: "intervals", source_rule: { activity_types: ["Run"], min_minutes: "20" } });
+    expect(said([quoted], oneDay(null, [{ type: "Run", elapsed_time: 60 }]))).toEqual({ long_run: false });
+    expect(said([quoted], oneDay(null, [{ type: "Run", elapsed_time: 1199 }]))).toEqual({ long_run: false });
+    expect(said([quoted], oneDay(null, [{ type: "Run", elapsed_time: 1200 }]))).toEqual({ long_run: true });
+    const decimal = habit({ id: "long_run", type: "check", source: "intervals", source_rule: { activity_types: ["Run"], min_minutes: " 2.5 " } });
+    expect(said([decimal], oneDay(null, [{ type: "Run", elapsed_time: 149 }]))).toEqual({ long_run: false });
+    expect(said([decimal], oneDay(null, [{ type: "Run", elapsed_time: 150 }]))).toEqual({ long_run: true });
+    // Anything that isn't a number is no minimum at all.
+    for (const odd of ["twenty", "", null, -5, "-5", true, [20]]) {
+      const loose = habit({ id: "long_run", type: "check", source: "intervals", source_rule: { activity_types: ["Run"], min_minutes: odd } });
+      expect(said([loose], oneDay(null, [{ type: "Run", elapsed_time: 60 }])), String(odd)).toEqual({ long_run: true });
+    }
   });
 
   it("are left alone until they name an activity type", () => {
@@ -129,6 +151,16 @@ describe("wellness values", () => {
     expect(said([kip, named], oneDay({ sleepSecs: 27720 }))).toEqual({ kip_h: 7.7 });
   });
 
+  it("leave out a sleep too short to round to anything", () => {
+    // Under three minutes is 0.0 h: not a night, and not a value to show.
+    expect(said([sleep], oneDay({ sleepSecs: 179 }))).toEqual({});
+    expect(said([sleep], oneDay({ sleepSecs: 1 }))).toEqual({});
+    expect(said([sleep], oneDay({ sleepSecs: 180 }))).toEqual({ sleep_h: 0.1 });
+    const minutes = habit({ id: "sleep", type: "duration", unit: "min", source: "intervals", source_rule: { wellness_field: "sleepSecs" } });
+    expect(said([minutes], oneDay({ sleepSecs: 29 }))).toEqual({});
+    expect(said([minutes], oneDay({ sleepSecs: 30 }))).toEqual({ sleep_min: 1 });
+  });
+
   it("are left out when the field is missing or null, even on a day with a run", () => {
     expect(said([run, sleep], oneDay({ sleepSecs: null, restingHR: 53 }, [{ type: "Run" }]))).toEqual({ run: true, resting_hr: 53 });
     expect(said([run, sleep], oneDay({ restingHR: 53 }, [{ type: "Run" }]))).toEqual({ run: true, resting_hr: 53 });
@@ -139,6 +171,9 @@ describe("wellness values", () => {
   it("log HRV, resting heart rate and sleep score beside the habits", () => {
     expect(said([], oneDay({ hrv: 68.44, restingHR: 49, sleepScore: 91 }))).toEqual({ hrv: 68.4, resting_hr: 49, sleep_score: 91 });
     expect(said([], oneDay({ hrv: null, restingHR: 49, sleepScore: null }))).toEqual({ resting_hr: 49 });
+    // Resting heart rate is whole beats; the other two keep one decimal place.
+    expect(said([], oneDay({ hrv: 68.46, restingHR: 49.6, sleepScore: 90.96 }))).toEqual({ hrv: 68.5, resting_hr: 50, sleep_score: 91 });
+    expect(said([], oneDay({ restingHR: 49.4 }))).toEqual({ resting_hr: 49 });
     expect(said([], oneDay({ restingHR: 50, tempRestingHR: true }))).toEqual({});
     expect(said([], oneDay({ ctl: 40, atl: 38 }))).toEqual({});
   });
@@ -184,6 +219,20 @@ describe("weight", () => {
     expect(said([habit({ id: "weight", type: "number", unit: "lb", archived: true })], oneDay({ weight: 77.6 }))).toEqual({});
   });
 
+  it("is found by the id `weight` and by nothing looser", () => {
+    const record = oneDay({ weight: 77.6 });
+    // Another number habit in a weight unit is not the Weight habit.
+    expect(said([habit({ id: "waist", type: "number", unit: "kg" })], record)).toEqual({});
+    expect(said([habit({ id: "weight_goal", type: "number", unit: "lb" })], record)).toEqual({});
+    // Nor is a habit called weight that isn't a number, or that names another field of its own.
+    expect(said([habit({ id: "weight", type: "scale" })], record)).toEqual({});
+    expect(said([habit({ id: "weight", type: "duration", unit: "kg" })], record)).toEqual({});
+    const fat = habit({ id: "weight", type: "number", unit: "kg", source: "intervals", source_rule: { wellness_field: "bodyFat" } });
+    expect(said([fat], oneDay({ weight: 77.6, bodyFat: 14.2 }))).toEqual({ weight_kg: 14.2 });
+    // The first of several is not picked by position: the one with the id is.
+    expect(said([habit({ id: "waist", type: "number", unit: "kg" }), weight], record)).toEqual({ weight_lb: 171.1 });
+  });
+
   it("goes to a habit that names the weight field instead, if there is one", () => {
     const mass = habit({ id: "mass", type: "number", unit: "kg", source: "intervals", source_rule: { wellness_field: "weight" } });
     expect(said([weight, mass], oneDay({ weight: 77.6 }))).toEqual({ mass_kg: 77.6 });
@@ -192,9 +241,9 @@ describe("weight", () => {
 
 describe("the fixture month", () => {
   const habits = SEED_HABITS;
-  const data: IntervalsData = { wellness: readWellness(wellnessJson()), ...readActivities(activitiesJson()) };
+  const data: IntervalsData = { ...readActivities(activitiesJson()), wellness: readWellness(wellnessJson()).wellness };
   const wants = intervalsWants(habits, data, RANGE);
-  const on = (date: string) => Object.fromEntries((wants.get(date) ?? []).map((want) => [want.key, want.value]));
+  const on = (date: string) => Object.fromEntries((wants.get(date) ?? []).map((want) => [want.key, shown(want)]));
 
   it("has a run, sleep and the vitals on the right days", () => {
     expect(on("2026-11-17")).toEqual({ sleep_h: 7.7, hrv: 69, resting_hr: 52, sleep_score: 82, run: true });
@@ -208,9 +257,9 @@ describe("the fixture month", () => {
     expect(on("2026-11-09")).toEqual({ weight_lb: 171.1, resting_hr: 50, run: true });
   });
 
-  it("has nothing at all for the days the watch was off, Strava stub or not", () => {
+  it("has nothing for the days the watch was off, and only takes back a 'no run' where the Strava stub is", () => {
     expect(wants.has("2026-11-07")).toBe(false);
-    expect(wants.has("2026-11-08")).toBe(false);
+    expect(on("2026-11-08")).toEqual({ run: WITHDRAWN });
     expect(data.withheld).toBe(2);
   });
 
@@ -229,7 +278,7 @@ describe("the fixture month", () => {
 
 describe("weather", () => {
   const weather = readWeather(berlinJson());
-  const on = (wants: Map<string, Want[]>, date: string) => Object.fromEntries((wants.get(date) ?? []).map((want) => [want.key, want.value]));
+  const on = (wants: Map<string, Want[]>, date: string) => Object.fromEntries((wants.get(date) ?? []).map((want) => [want.key, shown(want)]));
 
   it("is written in °F and inches beside the Fahrenheit setting", () => {
     const wants = weatherWants("F", weather, RANGE);
@@ -260,6 +309,33 @@ describe("weather", () => {
     expect([...weatherWants("F", withForecast, RANGE).keys()]).toEqual(["2026-11-16", "2026-11-17"]);
   });
 
+  it("never writes minus nought", () => {
+    const cold = readWeather({
+      daily: { time: ["2026-11-16", "2026-11-17"], temperature_2m_max: [-0.4, -0.5], temperature_2m_min: [-17.6, -18], precipitation_sum: [0.001, -0], weather_code: [71, 71] },
+    });
+    const celsius = weatherWants("C", cold, RANGE);
+    expect(on(celsius, "2026-11-16")).toEqual({ weather_high_c: 0, weather_low_c: -18, weather_precip_mm: 0, weather_condition: "snow" });
+    const fahrenheit = weatherWants("F", cold, RANGE);
+    // -17.6 °C is 0.32 °F and -18 °C is -0.4 °F: both are 0, and neither is -0.
+    expect(on(fahrenheit, "2026-11-16")).toMatchObject({ weather_low_f: 0, weather_precip_in: 0 });
+    expect(on(fahrenheit, "2026-11-17")).toMatchObject({ weather_low_f: 0, weather_precip_in: 0 });
+    for (const wants of [celsius, fahrenheit]) {
+      for (const want of [...wants.values()].flat()) {
+        if ("value" in want) expect(Object.is(want.value, -0), `${want.key}`).toBe(false);
+      }
+    }
+    // As it lands in a file.
+    const text = updateDayFile(null, "2026-11-16", syncPatch(parseDay(null, "2026-11-16"), celsius.get("2026-11-16")!, "2026-11-17T06:30:00-08:00")!);
+    expect(text).toContain("weather_high_c: 0\n");
+    expect(text).not.toContain("-0\n");
+  });
+
+  it("leaves out a precipitation below nothing", () => {
+    const odd = readWeather({ daily: { time: ["2026-11-17"], temperature_2m_max: [8.5], precipitation_sum: [-1] } });
+    expect(on(weatherWants("C", odd, RANGE), "2026-11-17")).toEqual({ weather_high_c: 9 });
+    expect(on(weatherWants("F", odd, RANGE), "2026-11-17")).toEqual({ weather_high_f: 47 });
+  });
+
   it("leaves out what a day doesn't have", () => {
     const partial = readWeather({
       daily: { time: ["2026-11-16", "2026-11-17"], temperature_2m_max: [11.2, null], temperature_2m_min: [null, null], precipitation_sum: [null, null], weather_code: [42, null] },
@@ -284,7 +360,7 @@ describe("weather", () => {
 
 describe("what may be written to a day file", () => {
   const AT = "2026-11-17T06:30:00-08:00";
-  const want = (key: string, value: Want["value"], source: Want["source"] = "intervals"): Want => ({ key, value, source });
+  const want = (key: string, value: boolean | number | string, source: Want["source"] = "intervals"): Want => ({ key, value, source });
   const day = (frontmatter: string) => parseDay(`---\n${frontmatter}---\n`, DAY);
 
   it("fills a day that has nothing, and records where each value came from", () => {
@@ -336,6 +412,41 @@ describe("what may be written to a day file", () => {
   it("leaves a value another source put there", () => {
     const mixed = day("morning_pages_words: 812\nsleep_h: 7\n_sources:\n  morning_pages_words: morning_pages\n  sleep_h: open-meteo\n");
     expect(syncPatch(mixed, [want("morning_pages_words", 5), want("sleep_h", 7.7)], AT)).toBeNull();
+  });
+
+  describe("taking back a 'no' the source no longer stands by", () => {
+    const withdraw: Want = { key: "run", withdraw: false, source: "intervals" };
+
+    it("removes the key and its source entry, and nothing else", () => {
+      const synced = "---\ndate: 2026-11-17\nrun: false # synced\nlift: false\nmood: 4\n_sources:\n  run: intervals\n  lift: intervals\n  mood: manual\n_synced_at: 2026-11-16T06:00:00-08:00\n---\n\nnotes\n";
+      const patch = syncPatch(parseDay(synced, DAY), [withdraw], AT)!;
+      expect(patch).toEqual({ values: { run: undefined }, sources: { run: undefined }, syncedAt: AT });
+      expect(updateDayFile(synced, DAY, patch)).toBe(
+        `---\ndate: 2026-11-17\nlift: false\nmood: 4\n_sources:\n  lift: intervals\n  mood: manual\n_synced_at: ${AT}\n---\n\nnotes\n`,
+      );
+      // Done once, there is nothing left to do.
+      expect(syncPatch(parseDay(updateDayFile(synced, DAY, patch), DAY), [withdraw], AT)).toBeNull();
+    });
+
+    it("leaves a 'no' the user set, or one with no source on record", () => {
+      expect(syncPatch(day("run: false\n_sources:\n  run: manual\n"), [withdraw], AT)).toBeNull();
+      expect(syncPatch(day("run: false\n"), [withdraw], AT)).toBeNull();
+      expect(syncPatch(day("run: false\n_sources:\n  run: open-meteo\n"), [withdraw], AT)).toBeNull();
+    });
+
+    it("leaves anything but the 'no' it wrote", () => {
+      expect(syncPatch(day("run: true\n_sources:\n  run: intervals\n"), [withdraw], AT)).toBeNull();
+      expect(syncPatch(day("run: null\n_sources:\n  run: intervals\n"), [withdraw], AT)).toBeNull();
+      expect(syncPatch(day("_sources:\n  run: intervals\n"), [withdraw], AT)).toBeNull();
+      expect(syncPatch(day(""), [withdraw], AT)).toBeNull();
+    });
+
+    it("goes with the day's other changes", () => {
+      const synced = day("run: false\n_sources:\n  run: intervals\n");
+      expect(syncPatch(synced, [withdraw, want("hrv", 69)], AT)).toEqual({
+        values: { run: undefined, hrv: 69 }, sources: { run: undefined, hrv: "intervals" }, syncedAt: AT,
+      });
+    });
   });
 
   it("treats a key named like part of an object as a key", () => {

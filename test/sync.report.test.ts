@@ -9,6 +9,7 @@ const report = (fields: Partial<SyncReport> = {}): SyncReport => ({
   intervals: { status: "synced" },
   weather: { status: "synced" },
   withheld: 0,
+  unreadable: 0,
   unwritten: [],
   stopped: false,
   ...fields,
@@ -63,10 +64,7 @@ describe("the line a sync leaves", () => {
     expect(syncMessage(report({ intervals: failed({ kind: "key_rejected" }) }), OPENED)).toBe(
       "Sync: intervals.icu did not accept the API key. Paste it again in Settings; it is under Developer Settings on intervals.icu.",
     );
-    expect(syncMessage(report({ intervals: failed({ kind: "offline" }), weather: failed({ kind: "offline" }) }), OPENED)).toBe(
-      "Sync: intervals.icu could not be reached. Check the internet connection, then try again. Open-Meteo could not be reached. Check the internet connection, then try again.",
-    );
-    expect(syncMessage(report({ changed: ["2026-11-17"], intervals: failed({ kind: "rate_limited", retry_after_secs: 90 }) }), ASKED)).toBe(
+    expect(syncMessage(report({ changed: ["2026-11-17"], intervals: failed({ kind: "rate_limited", retry_after_secs: null }) }), ASKED)).toBe(
       "Sync: 1 day updated. intervals.icu is limiting requests. Try again in a few minutes.",
     );
     expect(syncMessage(report({ weather: failed({ kind: "unexpected", detail: "HTTP 502" }) }), ASKED)).toBe(
@@ -78,14 +76,90 @@ describe("the line a sync leaves", () => {
     );
   });
 
-  it("names a day file it had to leave alone", () => {
-    const one = report({ changed: ["2026-11-17"], unwritten: [{ date: "2026-11-12", reason: "Frontmatter: Invalid YAML: Map keys must be unique (line 4)." }] });
+  it("gives the wait the server asked for when it limits requests", () => {
+    const limited = (secs: number | null) => problemText("intervals.icu", { kind: "rate_limited", retry_after_secs: secs });
+    expect(limited(null)).toBe("intervals.icu is limiting requests. Try again in a few minutes.");
+    expect(limited(0)).toBe("intervals.icu is limiting requests. Try again in a minute.");
+    expect(limited(60)).toBe("intervals.icu is limiting requests. Try again in a minute.");
+    expect(limited(61)).toBe("intervals.icu is limiting requests. Try again in about 2 minutes.");
+    expect(limited(90)).toBe("intervals.icu is limiting requests. Try again in about 2 minutes.");
+    expect(limited(600)).toBe("intervals.icu is limiting requests. Try again in about 10 minutes.");
+    expect(limited(3540)).toBe("intervals.icu is limiting requests. Try again in about 59 minutes.");
+    expect(limited(3600)).toBe("intervals.icu is limiting requests. Try again in about an hour.");
+    expect(limited(5000)).toBe("intervals.icu is limiting requests. Try again in about an hour.");
+    expect(limited(7200)).toBe("intervals.icu is limiting requests. Try again in about 2 hours.");
+    expect(limited(86400)).toBe("intervals.icu is limiting requests. Try again in about 24 hours.");
+  });
+
+  it("says a trouble both sources share once, and troubles that differ each in turn", () => {
+    const failed = (problem: Parameters<typeof problemText>[1]) => ({ status: "failed", problem }) as const;
+    const both = (a: Parameters<typeof problemText>[1], b = a) => syncMessage(report({ intervals: failed(a), weather: failed(b) }), OPENED);
+    expect(both({ kind: "offline" })).toBe(
+      "Sync: intervals.icu and Open-Meteo could not be reached. Check the internet connection, then try again.",
+    );
+    expect(both({ kind: "rate_limited", retry_after_secs: 600 })).toBe(
+      "Sync: intervals.icu and Open-Meteo are limiting requests. Try again in about 10 minutes.",
+    );
+    expect(both({ kind: "unexpected", detail: "HTTP 503" })).toBe(
+      "Sync: intervals.icu and Open-Meteo sent something this app can't use (HTTP 503). Try again later.",
+    );
+    // Not the same: different waits, different details, different kinds.
+    expect(both({ kind: "rate_limited", retry_after_secs: 600 }, { kind: "rate_limited", retry_after_secs: 30 })).toBe(
+      "Sync: intervals.icu is limiting requests. Try again in about 10 minutes. Open-Meteo is limiting requests. Try again in a minute.",
+    );
+    expect(both({ kind: "unexpected", detail: "HTTP 500" }, { kind: "unexpected", detail: "HTTP 503" })).toBe(
+      "Sync: intervals.icu sent something this app can't use (HTTP 500). Try again later. Open-Meteo sent something this app can't use (HTTP 503). Try again later.",
+    );
+    expect(both({ kind: "key_rejected" }, { kind: "offline" })).toBe(
+      "Sync: intervals.icu did not accept the API key. Paste it again in Settings; it is under Developer Settings on intervals.icu. Open-Meteo could not be reached. Check the internet connection, then try again.",
+    );
+  });
+
+  it("says how many records it couldn't read", () => {
+    expect(syncMessage(report({ unreadable: 1 }), OPENED)).toBe("Sync: 1 record from intervals.icu could not be read and was left out.");
+    expect(syncMessage(report({ unreadable: 44 }), ASKED)).toBe("Sync: nothing new. 44 records from intervals.icu could not be read and were left out.");
+    expect(syncMessage(report({ unreadable: 3, changed: ["2026-11-17"] }), OPENED)).toBe(
+      "Sync: 1 day updated. 3 records from intervals.icu could not be read and were left out.",
+    );
+  });
+
+  it("names every day file it had to leave alone, grouped by why", () => {
+    const yaml = "Frontmatter: Invalid YAML: Map keys must be unique (line 4).";
+    const one = report({ changed: ["2026-11-17"], unwritten: [{ date: "2026-11-12", reason: yaml }] });
     expect(syncMessage(one, OPENED)).toBe(
       "Sync: 1 day updated. days/2026-11-12.md left as it is: Frontmatter: Invalid YAML: Map keys must be unique (line 4).",
     );
-    const three = report({ unwritten: ["2026-11-03", "2026-11-04", "2026-11-12"].map((date) => ({ date, reason: "No space left on device (os error 28)" })) });
-    expect(syncMessage(three, OPENED)).toBe(
-      "Sync: days/2026-11-03.md and 2 more left as they are: No space left on device (os error 28).",
+    const full = report({ unwritten: ["2026-11-03", "2026-11-04", "2026-11-12"].map((date) => ({ date, reason: "No space left on device (os error 28)" })) });
+    expect(syncMessage(full, OPENED)).toBe(
+      "Sync: days/2026-11-03.md, days/2026-11-04.md and days/2026-11-12.md left as they are: No space left on device (os error 28).",
+    );
+    // The review's case: a duplicate key, a file that isn't text, and a read-only file.
+    const mixed = report({
+      unwritten: [
+        { date: "2026-11-05", reason: yaml },
+        { date: "2026-11-06", reason: "stream did not contain valid UTF-8" },
+        { date: "2026-11-10", reason: "2026-11-10.md is read-only, so it was not changed" },
+      ],
+    });
+    expect(syncMessage(mixed, OPENED)).toBe(
+      "Sync: days/2026-11-05.md left as it is: Frontmatter: Invalid YAML: Map keys must be unique (line 4). " +
+        "days/2026-11-06.md left as it is: stream did not contain valid UTF-8. " +
+        "days/2026-11-10.md is read-only, so it was left as it is. Unlock it in Finder (Get Info), then sync again.",
+    );
+    const locked = report({
+      unwritten: ["2026-11-10", "2026-11-11"].map((date) => ({ date, reason: `${date}.md is read-only, so it was not changed` })),
+    });
+    expect(syncMessage(locked, OPENED)).toBe(
+      "Sync: days/2026-11-10.md and days/2026-11-11.md are read-only, so they were left as they are. Unlock them in Finder (Get Info), then sync again.",
+    );
+    // Two reasons, several files each: each file is under its own reason, in the order they came.
+    const grouped = report({
+      unwritten: [
+        { date: "2026-11-03", reason: "A" }, { date: "2026-11-04", reason: "B." }, { date: "2026-11-05", reason: "A." }, { date: "2026-11-06", reason: "B" },
+      ],
+    });
+    expect(syncMessage(grouped, OPENED)).toBe(
+      "Sync: days/2026-11-03.md and days/2026-11-05.md left as they are: A. days/2026-11-04.md and days/2026-11-06.md left as they are: B.",
     );
   });
 

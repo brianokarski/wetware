@@ -183,10 +183,62 @@ describe("a sync of the fixture folder", () => {
     // With a type named, the next sync ticks them.
     const habits = (await loadHabits(fs)).map((h) => (h.id === "lift" ? { ...h, source_rule: { activity_types: ["WeightTraining"] } } : h));
     const report = await runSync(await job(fs, { habits }));
-    expect(report.changed).toEqual(["2026-10-25", "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-11-09", "2026-11-17"]);
+    expect(report.changed).toEqual(["2026-10-25", "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-11-09", "2026-11-12", "2026-11-17"]);
     expect((await readDay(fs, "2026-10-27")).values.lift).toBe(true);
     expect((await readDay(fs, "2026-11-17")).values.lift).toBe(false);
     expect((await readDay(fs, "2026-11-07")).values).not.toHaveProperty("lift");
+    // The 12th has a run and a Strava stub. The stub may have been a strength session: the "no lift" synced before is taken back.
+    const twelfth = await readDay(fs, "2026-11-12");
+    expect(twelfth.values).not.toHaveProperty("lift");
+    expect(twelfth.sources).not.toHaveProperty("lift");
+    expect(twelfth.values.run).toBe(true);
+  });
+
+  it("takes back a 'no' it wrote once a Strava stub turns up on that day, and only its own", async () => {
+    const fs = folderFs();
+    const before = new Map(fs.files);
+    const habits = await loadHabits(fs);
+    // The 15th: sync said "no run" (the watch was on, there was a climb). The 2nd: the same, and then set by hand.
+    expect((await readDay(fs, "2026-11-15")).sources.run).toBe("intervals");
+    await writeCell(fs, habits.find((h) => h.id === "run")!, "2026-11-02", false);
+    const stub = (day: string) => ({ id: `s${day}`, start_date_local: `${day}T07:30:00`, source: "STRAVA", _note: "STRAVA activities are not available via the API" });
+    const activities = [...activitiesJson(), stub("2026-11-15"), stub("2026-11-02"), stub("2026-11-16")];
+    const report = await runSync(await job(fs, { sources: fakeSources({ activities }), settings: NO_LOCATION }));
+    expect(report.withheld).toBe(5);
+    expect(changed(before.get(path("2026-11-15"))!, fs.files.get(path("2026-11-15"))!)).toEqual({
+      added: [`_synced_at: ${AT}`],
+      removed: ["run: false", "  run: intervals", "_synced_at: 2026-11-16T06:25:00-08:00"],
+    });
+    const habit = habits.find((h) => h.id === "run")!;
+    expect(cellState(habit, await readDay(fs, "2026-11-15"), "2026-11-17").state).toBe("no_data");
+    // Set by hand: it stays. A run that can be read: it stays ticked, stub or no stub.
+    expect((await readDay(fs, "2026-11-02")).values.run).toBe(false);
+    expect((await readDay(fs, "2026-11-02")).sources.run).toBe("manual");
+    expect((await readDay(fs, "2026-11-16")).values.run).toBe(true);
+    // And it is done once: the next sync changes nothing.
+    const settled = new Map(fs.files);
+    const again = await runSync(await job(fs, { sources: fakeSources({ activities }), settings: NO_LOCATION }));
+    expect(again.changed).toEqual([]);
+    expect(new Map(fs.files)).toEqual(settled);
+  });
+
+  it("counts the records it can't place, and still syncs the ones it can", async () => {
+    const fs = folderFs();
+    const wellness = wellnessJson().map((r) => (r.id === "2026-11-17" ? { ...r, id: "2026-11-17T00:00:00" } : r));
+    const activities = activitiesJson().map((a) => (String(a.start_date_local).startsWith("2026-11-09") ? { ...a, start_date_local: "2026-11-09 07:02:27" } : a));
+    activities.push({ id: "i9", start_date_local: "2026-11-16T12:00:00", source: "GARMIN_CONNECT" });
+    const report = await runSync(await job(fs, { sources: fakeSources({ wellness, activities }), settings: NO_LOCATION }));
+    expect(report).toMatchObject({ unreadable: 3, withheld: 2, intervals: { status: "synced" } });
+    expect(report.changed).toContain("2026-10-25");
+    // Every record unreadable: nothing is written, and the report says how many there were.
+    const none = folderFs();
+    const before = new Map(none.files);
+    const slashed = wellnessJson().map((r) => ({ ...r, id: String(r.id).replaceAll("-", "/") }));
+    const spaced = activitiesJson().map((a) => ({ ...a, start_date_local: String(a.start_date_local).replace("T", " ") }));
+    const all = await runSync(await job(none, { sources: fakeSources({ wellness: slashed, activities: spaced }), settings: NO_LOCATION }));
+    expect(all).toMatchObject({ unreadable: 44, changed: [], intervals: { status: "synced" } });
+    expect(new Map(none.files)).toEqual(before);
+    expect((await runSync(await job(folderFs()))).unreadable).toBe(0);
   });
 
   it("writes only the files that change, and nothing at all the second time", async () => {

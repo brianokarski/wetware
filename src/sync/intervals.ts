@@ -25,9 +25,18 @@ export interface IntervalsData {
   wellness: Map<string, Dict>;
   /** The activities that can be read, by the local day they started on. */
   activities: Map<string, Activity[]>;
-  /** Activities sent as stubs with no detail: the ones that reached intervals.icu through Strava. */
+  /** Activities that reached intervals.icu through Strava (`source: STRAVA`): sent as stubs with no detail. */
   withheld: number;
-  /** The days that have such a stub: something was done that day, and there is no saying what. */
+  /**
+   * Records that can't be used: a wellness record whose day can't be read, an
+   * activity whose start can't be read, an activity from any source but
+   * Strava that has no type, and anything that isn't a record at all.
+   */
+  unreadable: number;
+  /**
+   * The days that have an activity of no known kind (a Strava stub, or one
+   * with no type): something was done that day, and there is no saying what.
+   */
   unreadableDays: Set<string>;
 }
 
@@ -51,13 +60,15 @@ export function reading(record: Dict, field: string): number | null {
 }
 
 /**
- * What a watch or ring records by itself. A day with any of these was a day
- * the device was worn and syncing. Fitness and fatigue, which intervals.icu
- * computes for every day, don't count, and nor does what is typed in by hand.
+ * Measurements a watch or ring takes by itself: sleep time and score, heart
+ * rate asleep and at rest, HRV, blood oxygen, breathing, steps and floors. A
+ * day with any of these was a day the device was worn and syncing. Nothing
+ * else on a record counts: not fitness and fatigue, which intervals.icu
+ * computes for every day, and not what a person rates or types in (sleep
+ * quality, readiness, mood, soreness, weight, comments).
  */
 const DEVICE_FIELDS = [
-  "sleepSecs", "sleepScore", "sleepQuality", "avgSleepingHR", "hrv", "hrvSDNN", "restingHR", "spO2", "respiration",
-  "steps", "floorsClimbed", "readiness",
+  "sleepSecs", "sleepScore", "avgSleepingHR", "restingHR", "hrv", "hrvSDNN", "spO2", "respiration", "steps", "floorsClimbed",
 ];
 
 /** Whether a wellness record holds at least one thing a device measured that day. */
@@ -73,64 +84,92 @@ function localDay(value: unknown): string | null {
   return parseDateKey(day) && (rest === "" || rest.startsWith("T")) ? day : null;
 }
 
-/** `GET /athlete/0/wellness`: a list of records whose `id` is the local day. */
-export function readWellness(raw: unknown): Map<string, Dict> {
+/**
+ * `GET /athlete/0/wellness`: a list of records whose `id` is the local day.
+ * A record with no day that can be read is counted, not kept.
+ */
+export function readWellness(raw: unknown): Pick<IntervalsData, "wellness"> & { unreadable: number } {
   if (!Array.isArray(raw)) throw new SourceShapeError("the wellness records were not a list");
-  const byDay = new Map<string, Dict>();
+  const wellness = new Map<string, Dict>();
+  let unreadable = 0;
   for (const record of raw) {
-    if (isDict(record) && typeof record.id === "string" && parseDateKey(record.id)) byDay.set(record.id, record);
+    if (isDict(record) && typeof record.id === "string" && parseDateKey(record.id)) wellness.set(record.id, record);
+    else unreadable++;
   }
-  return byDay;
+  return { wellness, unreadable };
 }
 
 const seconds = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
 
+export interface ActivitiesRead extends Pick<IntervalsData, "activities" | "withheld" | "unreadable" | "unreadableDays"> {
+  /** The types of the activities that have a type but no start that can be read. */
+  undatedTypes: string[];
+}
+
 /**
- * `GET /athlete/0/activities`: a list of activities. One that came through
- * Strava is sent as a stub (an id, a start time, `source: STRAVA` and a
- * note) with no type or duration. Stubs are counted and their days noted,
- * and they are otherwise left out: there is no saying what they were.
+ * `GET /athlete/0/activities`: a list of activities.
+ *
+ * One that came through Strava is sent as a stub (an id, a start time,
+ * `source: STRAVA` and a note) with no type or duration. Stubs are counted
+ * and their days noted, and they are otherwise left out: there is no saying
+ * what they were. The same goes for an activity from elsewhere that has no
+ * type, which is counted as unreadable, as is one whose start can't be read.
  */
-export function readActivities(raw: unknown): Pick<IntervalsData, "activities" | "withheld" | "unreadableDays"> {
+export function readActivities(raw: unknown): ActivitiesRead {
   if (!Array.isArray(raw)) throw new SourceShapeError("the activities were not a list");
   const activities = new Map<string, Activity[]>();
   const unreadableDays = new Set<string>();
+  const undatedTypes: string[] = [];
   let withheld = 0;
+  let unreadable = 0;
   for (const item of raw) {
-    if (!isDict(item)) continue;
+    if (!isDict(item)) {
+      unreadable++;
+      continue;
+    }
     const type = typeof item.type === "string" ? item.type.trim() : "";
     const date = localDay(item.start_date_local);
     if (item.source === "STRAVA" || type === "") {
-      withheld++;
+      if (item.source === "STRAVA") withheld++;
+      else unreadable++;
       if (date !== null) unreadableDays.add(date);
       continue;
     }
-    if (date === null) continue;
+    if (date === null) {
+      unreadable++;
+      undatedTypes.push(type);
+      continue;
+    }
     // How long it ran: the longer of the time on the clock and the time moving, since lifting and climbing barely "move".
     const lengths = [seconds(item.elapsed_time), seconds(item.moving_time)].filter((s): s is number => s !== null);
     const minutes = lengths.length > 0 ? Math.max(...lengths) / 60 : null;
     activities.set(date, [...(activities.get(date) ?? []), { date, type, minutes }]);
   }
-  return { activities, withheld, unreadableDays };
+  return { activities, withheld, unreadable, unreadableDays, undatedTypes };
 }
 
 export interface ActivitySummary {
   /** Each distinct `type`, as spelled by intervals.icu, most frequent first. */
   types: { type: string; count: number }[];
-  /** Activities that could be read. */
+  /** Activities whose type could be read. */
   total: number;
   /** Stubs that came through Strava. */
   withheld: number;
+  /** Activities sync can't use: no type, or a start it can't place on a day. */
+  unreadable: number;
 }
 
-/** The activity types in a response and how many of each: what a habit's `activity_types` can be set to. */
+/**
+ * The activity types in a response and how many of each: what a habit's
+ * `activity_types` can be set to. A type is listed whether or not the
+ * activity's start can be read: naming it needs no date.
+ */
 export function summariseActivities(raw: unknown): ActivitySummary {
-  const { activities, withheld } = readActivities(raw);
+  const { activities, withheld, unreadable, undatedTypes } = readActivities(raw);
   const counts = new Map<string, number>();
-  for (const list of activities.values()) {
-    for (const { type } of list) counts.set(type, (counts.get(type) ?? 0) + 1);
-  }
+  const placed = [...activities.values()].flat().map((activity) => activity.type);
+  for (const type of [...placed, ...undatedTypes]) counts.set(type, (counts.get(type) ?? 0) + 1);
   const types = [...counts].map(([type, count]) => ({ type, count }));
   types.sort((a, b) => b.count - a.count || (a.type < b.type ? -1 : 1));
-  return { types, total: types.reduce((sum, { count }) => sum + count, 0), withheld };
+  return { types, total: types.reduce((sum, { count }) => sum + count, 0), withheld, unreadable };
 }

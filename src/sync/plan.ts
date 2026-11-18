@@ -17,12 +17,17 @@ import { condition, type WeatherDay } from "./weather";
 /** What a value's `_sources` entry says when sync wrote it (SPEC §6.2). */
 export type SyncSource = "intervals" | "open-meteo";
 
-/** One value a source has for a day. */
-export interface Want {
-  key: string;
-  value: boolean | number | string;
-  source: SyncSource;
-}
+/** What a value written by sync can be. */
+export type SyncValue = boolean | number | string;
+
+/**
+ * One thing a source has to say about a day: a value for a key, or that a
+ * value it gave before no longer stands. `withdraw` names that earlier value:
+ * the key is taken out only if it still holds exactly that, from this source.
+ */
+export type Want =
+  | { key: string; value: SyncValue; source: SyncSource }
+  | { key: string; withdraw: SyncValue; source: SyncSource };
 
 /** The values the sources have, by day. A day with nothing has no entry. */
 export type Wants = Map<string, Want[]>;
@@ -32,7 +37,17 @@ export interface SyncRange {
   newest: string;
 }
 
-const round = (value: number, places: number) => Math.round(value * 10 ** places) / 10 ** places;
+/** Rounded to so many decimal places. Never `-0`, which YAML would write as such. */
+function round(value: number, places: number): number {
+  const rounded = Math.round(value * 10 ** places) / 10 ** places;
+  return rounded === 0 ? 0 : rounded;
+}
+
+/** A number, or text that is nothing but a number, as `goal` and `order` are read in habits.yaml. */
+function numeric(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  return typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value) : null;
+}
 
 const LB_PER_KG = 2.2046226218;
 
@@ -62,8 +77,7 @@ function activityRule(habit: Habit): ActivityRule | null {
     .filter((type): type is string => typeof type === "string" && type.trim() !== "")
     .map((type) => type.trim().toLowerCase());
   if (types.length === 0) return null;
-  const least = habit.source_rule?.min_minutes;
-  return { habit, types, minMinutes: typeof least === "number" && Number.isFinite(least) && least > 0 ? least : 0 };
+  return { habit, types, minMinutes: Math.max(0, numeric(habit.source_rule?.min_minutes) ?? 0) };
 }
 
 /** Activity habits that can't be filled in until their `source_rule.activity_types` names a type. */
@@ -120,12 +134,14 @@ function inHabitUnit(field: string, value: number, habit: Habit): number | null 
     else return null;
   } else if (/Secs$/.test(field)) {
     if (habit.unit === "h") converted = round(value / 3600, 1);
-    else if (habit.unit === "min") converted = Math.round(value / 60);
+    else if (habit.unit === "min") converted = round(value / 60, 0);
     else return null;
+    // A few seconds of sleep is no record of a night. Nothing is written, and the cell reads "no data".
+    if (converted === 0) return null;
   } else {
     converted = round(value, 2);
   }
-  return habit.type === "duration" ? Math.round(converted) : converted;
+  return habit.type === "duration" ? round(converted, 0) : converted;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +156,9 @@ function inHabitUnit(field: string, value: number, habit: Habit): number | null 
  * It is `false` only on a day the source shows signs of life (some activity
  * that can be read, or a wellness record with something a device measured)
  * and everything done that day can be read. On a day with no sign of life,
- * or with an activity that came through Strava and so might have been the
- * very thing, nothing is said, and the cell reads "no data".
+ * nothing is said, and the cell reads "no data". On a day with an activity
+ * of no known kind (through Strava, or with no type), which might have been
+ * the very thing, a `false` said before is withdrawn.
  */
 export function intervalsWants(habits: Habit[], data: IntervalsData, range: SyncRange): Wants {
   const rules = habits.map(activityRule).filter((rule): rule is ActivityRule => rule !== null);
@@ -150,7 +167,7 @@ export function intervalsWants(habits: Habit[], data: IntervalsData, range: Sync
 
   for (const date of datesBetween(range.oldest, range.newest)) {
     const found: Want[] = [];
-    const say = (key: string, value: Want["value"]) => found.push({ key, value, source: "intervals" });
+    const say = (key: string, value: SyncValue) => found.push({ key, value, source: "intervals" });
     const record = data.wellness.get(date);
     const activities = data.activities.get(date) ?? [];
 
@@ -164,7 +181,7 @@ export function intervalsWants(habits: Habit[], data: IntervalsData, range: Sync
       const restingHr = reading(record, "restingHR");
       const sleepScore = reading(record, "sleepScore");
       if (hrv !== null) say(VITALS_KEYS.hrv, round(hrv, 1));
-      if (restingHr !== null) say(VITALS_KEYS.restingHr, Math.round(restingHr));
+      if (restingHr !== null) say(VITALS_KEYS.restingHr, round(restingHr, 0));
       if (sleepScore !== null) say(VITALS_KEYS.sleepScore, round(sleepScore, 1));
     }
 
@@ -177,6 +194,7 @@ export function intervalsWants(habits: Habit[], data: IntervalsData, range: Sync
           (minMinutes === 0 || (activity.minutes !== null && activity.minutes >= minMinutes)),
       );
       if (done || (alive && allKnown)) say(dayKey(habit), done);
+      else if (!allKnown) found.push({ key: dayKey(habit), withdraw: false, source: "intervals" });
     }
     if (found.length > 0) wants.set(date, found);
   }
@@ -191,14 +209,14 @@ export function intervalsWants(habits: Habit[], data: IntervalsData, range: Sync
  */
 export function weatherWants(temperature: Units["temperature"], weather: Map<string, WeatherDay>, range: SyncRange): Wants {
   const keys = WEATHER_KEYS[temperature];
-  const degrees = (celsius: number) => Math.round(temperature === "F" ? (celsius * 9) / 5 + 32 : celsius);
+  const degrees = (celsius: number) => round(temperature === "F" ? (celsius * 9) / 5 + 32 : celsius, 0);
   const wants: Wants = new Map();
 
   for (const date of datesBetween(range.oldest, range.newest)) {
     const day = weather.get(date);
     if (!day) continue;
     const found: Want[] = [];
-    const say = (key: string, value: Want["value"]) => found.push({ key, value, source: "open-meteo" });
+    const say = (key: string, value: SyncValue) => found.push({ key, value, source: "open-meteo" });
     if (day.high !== null) say(keys.high, degrees(day.high));
     if (day.low !== null) say(keys.low, degrees(day.low));
     if (day.precipitation !== null && day.precipitation >= 0) {
@@ -235,7 +253,7 @@ const own = (record: object, key: string) => Object.prototype.hasOwnProperty.cal
  * may only fill a gap (no key, or `null`): a value with no recorded source
  * was typed into the file by hand.
  */
-function mayWrite(day: Day, want: Want): boolean {
+function mayWrite(day: Day, want: { key: string; source: SyncSource }): boolean {
   if (own(day.sources, want.key)) return day.sources[want.key] === want.source;
   return !own(day.values, want.key) || day.values[want.key] === null;
 }
@@ -243,16 +261,25 @@ function mayWrite(day: Day, want: Want): boolean {
 /**
  * The patch that brings a day file in line with what the sources have, or
  * null if there is nothing to change: then the file is not touched, and not
- * created. `_synced_at` is set only along with a value.
+ * created. `_synced_at` is set only along with a change.
  */
 export function syncPatch(day: Day, wants: Want[], syncedAt: string): DayPatch | null {
   // No prototype, so a key such as `__proto__` is a key like any other.
-  const values: Record<string, Want["value"]> = Object.create(null);
-  const sources: Record<string, string> = Object.create(null);
+  const values: Record<string, SyncValue | undefined> = Object.create(null);
+  const sources: Record<string, string | undefined> = Object.create(null);
   let changes = 0;
   for (const want of wants) {
-    if (!mayWrite(day, want)) continue;
-    if (own(day.values, want.key) && day.values[want.key] === want.value) continue;
+    const held = own(day.values, want.key) ? day.values[want.key] : undefined;
+    if ("withdraw" in want) {
+      // Only what this source wrote, and only if it is still what it wrote: the key and its source entry both go.
+      const mine = own(day.sources, want.key) && day.sources[want.key] === want.source;
+      if (!mine || held !== want.withdraw) continue;
+      values[want.key] = undefined;
+      sources[want.key] = undefined;
+      changes++;
+      continue;
+    }
+    if (!mayWrite(day, want) || held === want.value) continue;
     values[want.key] = want.value;
     sources[want.key] = want.source;
     changes++;

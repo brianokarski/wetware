@@ -120,6 +120,21 @@ describe("a change worked out from the day as it is on disk", () => {
     expect(fs.busiest).toBe(1);
   });
 
+  it("doesn't write a file whose text the change leaves as it was", async () => {
+    const text = "---\ndate: 2026-11-17\nmood: 4\n_sources:\n  mood: manual\n---\n\nnotes\n";
+    const fs = slowFs({ [path]: text });
+    // The same value, the same source, the same notes: as a patch and as a function.
+    await writeDay(fs, "2026-11-17", { values: { mood: 4 }, sources: { mood: "manual" } });
+    await writeDay(fs, "2026-11-17", () => ({ values: { mood: 4 } }));
+    await writeDay(fs, "2026-11-17", { notes: "notes\n" });
+    await writeDay(fs, "2026-11-17", {});
+    expect(fs.writes).toBe(0);
+    expect(fs.files.get(path)).toBe(text);
+    // One that does change it is written once.
+    await writeDay(fs, "2026-11-17", { values: { mood: 5 } });
+    expect(fs.writes).toBe(1);
+  });
+
   it("writes nothing and creates no file when the change is null", async () => {
     const fs = slowFs();
     const day = await writeDay(fs, "2026-11-17", () => null);

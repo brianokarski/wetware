@@ -8,16 +8,22 @@ import { activitiesJson, berlinJson, wellnessJson } from "./syncFixtures";
 
 describe("intervals.icu wellness records", () => {
   it("are keyed by the local day in their id", () => {
-    const byDay = readWellness(wellnessJson());
+    const { wellness: byDay, unreadable } = readWellness(wellnessJson());
     expect(byDay.size).toBe(24);
+    expect(unreadable).toBe(0);
     expect([...byDay.keys()][0]).toBe("2026-10-25");
     expect(byDay.get("2026-11-17")).toMatchObject({ sleepSecs: 27720, hrv: 69, restingHR: 52, sleepScore: 82 });
   });
 
-  it("leave out records that name no day, and refuse a response that isn't a list", () => {
+  it("count the records that name no day and leave them out, and refuse a response that isn't a list", () => {
     const odd = [{ id: "2026-11-17", hrv: 60 }, { id: "2026-11-31" }, { id: "2026-11-16T00:00:00" }, { id: 20261115 }, { hrv: 50 }, null, "2026-11-14", []];
-    expect([...readWellness(odd).keys()]).toEqual(["2026-11-17"]);
-    expect(readWellness([]).size).toBe(0);
+    const read = readWellness(odd);
+    expect([...read.wellness.keys()]).toEqual(["2026-11-17"]);
+    expect(read.unreadable).toBe(7);
+    // Every record in another date format: none is kept, and all are counted, so the sync can say so.
+    const slashed = wellnessJson().map((record) => ({ ...record, id: String(record.id).replaceAll("-", "/") }));
+    expect(readWellness(slashed)).toEqual({ wellness: new Map(), unreadable: 24 });
+    expect(readWellness([])).toEqual({ wellness: new Map(), unreadable: 0 });
     for (const notAList of [null, undefined, {}, { id: "2026-11-17" }, "[]", 4]) {
       expect(() => readWellness(notAList)).toThrow(SourceShapeError);
     }
@@ -47,11 +53,16 @@ describe("intervals.icu wellness records", () => {
     expect(hasDeviceData({ id: "2026-11-07", ctl: 42.3, atl: 40.1, rampRate: 0.6, updated: "2026-11-07T14:00:00Z" })).toBe(false);
     expect(hasDeviceData({ ctl: 42.3, restingHR: 50, tempRestingHR: true })).toBe(false);
     expect(hasDeviceData({ mood: 3, soreness: 2, weight: 77.6, comments: "typed in" })).toBe(false);
+    // What a person rates, as against what a device measures.
+    expect(hasDeviceData({ sleepQuality: 2, readiness: 71, fatigue: 2, stress: 1, motivation: 3 })).toBe(false);
+    for (const field of ["sleepSecs", "sleepScore", "avgSleepingHR", "restingHR", "hrv", "hrvSDNN", "spO2", "respiration", "steps", "floorsClimbed"]) {
+      expect(hasDeviceData({ [field]: 42 }), field).toBe(true);
+    }
     expect(hasDeviceData({ sleepSecs: null, hrv: null, steps: 0 })).toBe(false);
     expect(hasDeviceData({ steps: 8421 })).toBe(true);
     expect(hasDeviceData({ restingHR: 50 })).toBe(true);
     expect(hasDeviceData({ sleepSecs: 27000 })).toBe(true);
-    const byDay = readWellness(wellnessJson());
+    const byDay = readWellness(wellnessJson()).wellness;
     expect(hasDeviceData(byDay.get("2026-11-07")!)).toBe(false);
     expect(hasDeviceData(byDay.get("2026-11-05")!)).toBe(true);
   });
@@ -80,26 +91,45 @@ describe("intervals.icu activities", () => {
   });
 
   it("count the ones that came through Strava and leave them out", () => {
-    const { activities, withheld, unreadableDays } = readActivities(activitiesJson());
+    const { activities, withheld, unreadable, unreadableDays } = readActivities(activitiesJson());
     expect(withheld).toBe(2);
+    expect(unreadable).toBe(0);
     expect([...unreadableDays].sort()).toEqual(["2026-11-08", "2026-11-12"]);
     // The Strava stub is the only thing on the 8th; a run is on the 12th beside the other.
     expect(activities.has("2026-11-08")).toBe(false);
     expect(activities.get("2026-11-12")!.map((a) => a.type)).toEqual(["Run"]);
-    // A stub is a stub whether it says STRAVA, or says nothing at all.
+    // Through Strava is what its `source` says, with a type or without, and nothing else.
     const stubs = [
       { id: "1", start_date_local: "2026-11-17T06:00:00", source: "STRAVA", _note: "STRAVA activities are not available via the API" },
-      { id: "2", start_date_local: "2026-11-17T07:00:00", source: "STRAVA", type: "Run", elapsed_time: 1800 },
-      {},
-      { id: "3", start_date_local: "2026-11-17T08:00:00", type: "  " },
-      { id: "4", start_date_local: "2026-11-17T09:00:00", type: null },
+      { id: "2", start_date_local: "2026-11-16T07:00:00", source: "STRAVA", type: "Run", elapsed_time: 1800 },
+      { id: "3", source: "STRAVA" },
     ];
-    expect(readActivities(stubs)).toEqual({ activities: new Map(), withheld: 5, unreadableDays: new Set(["2026-11-17"]) });
+    expect(readActivities(stubs)).toEqual({
+      activities: new Map(), withheld: 3, unreadable: 0, unreadableDays: new Set(["2026-11-17", "2026-11-16"]), undatedTypes: [],
+    });
   });
 
-  it("leave out what has no day to belong to, and refuse a response that isn't a list", () => {
-    const odd = [{ type: "Run" }, { type: "Run", start_date_local: "yesterday" }, { type: "Run", start_date_local: "2026-02-30T06:00:00" }, { type: "Run", start_date_local: 20261117 }, null, 7, "Run"];
-    expect(readActivities(odd)).toEqual({ activities: new Map(), withheld: 0, unreadableDays: new Set() });
+  it("count one with no type from anywhere else as unreadable, not as through Strava", () => {
+    const typeless = [
+      {},
+      { id: "3", start_date_local: "2026-11-17T08:00:00", source: "GARMIN_CONNECT", type: "  " },
+      { id: "4", start_date_local: "2026-11-15T09:00:00", type: null },
+      { id: "5", start_date_local: "2026-11-15T10:00:00", source: "strava" },
+    ];
+    // There is still no saying what was done on those days.
+    expect(readActivities(typeless)).toEqual({
+      activities: new Map(), withheld: 0, unreadable: 4, unreadableDays: new Set(["2026-11-17", "2026-11-15"]), undatedTypes: [],
+    });
+  });
+
+  it("count what has no day to belong to and leave it out, and refuse a response that isn't a list", () => {
+    const odd = [
+      { type: "Run" }, { type: "Run", start_date_local: "yesterday" }, { type: "Yoga", start_date_local: "2026-02-30T06:00:00" },
+      { type: "Run", start_date_local: 20261117 }, { type: "Run", start_date_local: "2026-11-17 06:12:44" }, null, 7, "Run",
+    ];
+    expect(readActivities(odd)).toEqual({
+      activities: new Map(), withheld: 0, unreadable: 8, unreadableDays: new Set(), undatedTypes: ["Run", "Run", "Yoga", "Run", "Run"],
+    });
     for (const notAList of [null, undefined, {}, { type: "Run" }, "[]"]) {
       expect(() => readActivities(notAList)).toThrow(SourceShapeError);
     }
@@ -115,10 +145,22 @@ describe("intervals.icu activities", () => {
       ],
       total: 20,
       withheld: 2,
+      unreadable: 0,
     });
     const tied = ["Yoga", "Hike", "Run", "Hike", "Yoga"].map((type) => ({ type, start_date_local: "2026-11-17T06:00:00" }));
     expect(summariseActivities(tied).types.map((t) => `${t.type} ${t.count}`)).toEqual(["Hike 2", "Yoga 2", "Run 1"]);
-    expect(summariseActivities([])).toEqual({ types: [], total: 0, withheld: 0 });
+    expect(summariseActivities([])).toEqual({ types: [], total: 0, withheld: 0, unreadable: 0 });
+  });
+
+  it("are listed by type even when their start can't be read, and those are counted", () => {
+    // Every start in a form this app doesn't expect: the types are still there to choose from.
+    const spaced = activitiesJson().map((activity) => ({ ...activity, start_date_local: String(activity.start_date_local).replace("T", " ") }));
+    const summary = summariseActivities(spaced);
+    expect(summary.types.map((t) => `${t.type} ${t.count}`)).toEqual(["Run 12", "WeightTraining 5", "RockClimbing 2", "Walk 1"]);
+    expect(summary).toMatchObject({ total: 20, withheld: 2, unreadable: 20 });
+    expect(summariseActivities([{ type: "Yoga", start_date_local: "17/11/2026" }, { start_date_local: "2026-11-17T06:00:00" }, 7])).toEqual({
+      types: [{ type: "Yoga", count: 1 }], total: 1, withheld: 0, unreadable: 3,
+    });
   });
 });
 
