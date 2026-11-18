@@ -29,8 +29,16 @@ const WEATHER_DAILY: &str = "temperature_2m_max,temperature_2m_min,precipitation
 const ACTIVITY_FIELDS: [&str; 7] =
     ["id", "start_date_local", "type", "source", "_note", "moving_time", "elapsed_time"];
 
-const TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
+/// How long a fetch may take and how much it may bring back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Limits {
+    /// For the whole call, from connecting to the last byte of the body.
+    timeout: Duration,
+    max_body_bytes: u64,
+}
+
+/// The limits every fetch the app makes runs under.
+const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_body_bytes: 16 * 1024 * 1024 };
 /// After a 429, try again this many times at most.
 const MAX_RETRIES: usize = 3;
 /// The longest single wait a `Retry-After` is honoured for. Asked to wait
@@ -122,9 +130,9 @@ fn basic_auth(key: &str) -> String {
 }
 
 /// Redirects are never followed, so the key can't be sent on to another host.
-fn agent() -> ureq::Agent {
+fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_global(Some(timeout))
         .max_redirects(0)
         .http_status_as_error(false)
         .user_agent(concat!("Wetware/", env!("CARGO_PKG_VERSION")))
@@ -155,9 +163,10 @@ fn transport(error: ureq::Error) -> SyncError {
 fn get_json(
     url: &str,
     authorization: Option<&str>,
+    limits: Limits,
     pause: &mut dyn FnMut(Duration),
 ) -> Result<Value, SyncError> {
-    let agent = agent();
+    let agent = agent(limits.timeout);
     let mut wait = FIRST_WAIT;
     let mut retries = 0;
     loop {
@@ -172,7 +181,7 @@ fn get_json(
                 let body = response
                     .body_mut()
                     .with_config()
-                    .limit(MAX_BODY_BYTES)
+                    .limit(limits.max_body_bytes)
                     .read_to_string()
                     .map_err(|_| unexpected("the response could not be read"))?;
                 return serde_json::from_str(&body).map_err(|_| unexpected("the response was not JSON"));
@@ -209,11 +218,12 @@ fn fetch_intervals(
     kind: IntervalsKind,
     oldest: &str,
     newest: &str,
+    limits: Limits,
     pause: &mut dyn FnMut(Duration),
 ) -> Result<Value, SyncError> {
     let url = intervals_url(base, kind, oldest, newest)?;
     let key = key.ok_or(SyncError::NoKey)?;
-    match get_json(&url, Some(&basic_auth(key)), pause)? {
+    match get_json(&url, Some(&basic_auth(key)), limits, pause)? {
         Value::Array(items) if kind == IntervalsKind::Activities => {
             Ok(Value::Array(items.into_iter().map(pruned).collect()))
         }
@@ -228,10 +238,11 @@ fn fetch_weather(
     longitude: f64,
     oldest: &str,
     newest: &str,
+    limits: Limits,
     pause: &mut dyn FnMut(Duration),
 ) -> Result<Value, SyncError> {
     let url = weather_url(base, latitude, longitude, oldest, newest)?;
-    match get_json(&url, None, pause)? {
+    match get_json(&url, None, limits, pause)? {
         days @ Value::Object(_) => Ok(days),
         _ => Err(unexpected("the response was not a set of daily values")),
     }
@@ -251,7 +262,7 @@ pub async fn intervals_fetch(kind: IntervalsKind, oldest: String, newest: String
     trace("intervals_fetch");
     blocking(move || {
         let key = keychain::intervals_key().map_err(|_| unexpected("the Keychain could not be read"))?;
-        fetch_intervals(INTERVALS_BASE, key.as_deref(), kind, &oldest, &newest, &mut std::thread::sleep)
+        fetch_intervals(INTERVALS_BASE, key.as_deref(), kind, &oldest, &newest, LIMITS, &mut std::thread::sleep)
     })
     .await
 }
@@ -260,7 +271,8 @@ pub async fn intervals_fetch(kind: IntervalsKind, oldest: String, newest: String
 #[tauri::command]
 pub async fn weather_fetch(latitude: f64, longitude: f64, oldest: String, newest: String) -> Result<Value, SyncError> {
     trace("weather_fetch");
-    blocking(move || fetch_weather(OPEN_METEO_BASE, latitude, longitude, &oldest, &newest, &mut std::thread::sleep)).await
+    blocking(move || fetch_weather(OPEN_METEO_BASE, latitude, longitude, &oldest, &newest, LIMITS, &mut std::thread::sleep))
+        .await
 }
 
 #[cfg(test)]
@@ -341,7 +353,7 @@ mod tests {
     }
 
     fn wellness(server: &Server) -> (Result<Value, SyncError>, Vec<u64>) {
-        waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, pause))
+        waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, LIMITS, pause))
     }
 
     fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
@@ -392,9 +404,9 @@ mod tests {
         for bad in not_days {
             for (oldest, newest) in [(bad, NOV_17), (OCT_25, bad)] {
                 let (result, _) =
-                    waits(|pause| fetch_intervals(&dead, Some(KEY), IntervalsKind::Wellness, oldest, newest, pause));
+                    waits(|pause| fetch_intervals(&dead, Some(KEY), IntervalsKind::Wellness, oldest, newest, LIMITS, pause));
                 assert_eq!(result, Err(unexpected("a day to fetch was not a date")), "{bad:?}");
-                let (result, _) = waits(|pause| fetch_weather(&dead, 37.8, -122.27, oldest, newest, pause));
+                let (result, _) = waits(|pause| fetch_weather(&dead, 37.8, -122.27, oldest, newest, LIMITS, pause));
                 assert_eq!(result, Err(unexpected("a day to fetch was not a date")), "{bad:?}");
             }
         }
@@ -404,7 +416,7 @@ mod tests {
         assert!(days(NOV_17, NOV_17).is_ok());
         assert!(days("2025-12-25", "2026-01-15").is_ok());
         for (latitude, longitude) in [(90.1, 0.0), (-91.0, 0.0), (0.0, 180.5), (0.0, -181.0), (f64::NAN, 0.0), (0.0, f64::INFINITY)] {
-            let (result, _) = waits(|pause| fetch_weather(&dead, latitude, longitude, OCT_25, NOV_17, pause));
+            let (result, _) = waits(|pause| fetch_weather(&dead, latitude, longitude, OCT_25, NOV_17, LIMITS, pause));
             assert_eq!(
                 result,
                 Err(unexpected("the place to fetch weather for was not a latitude and longitude")),
@@ -436,7 +448,7 @@ mod tests {
     fn with_no_key_nothing_is_sent() {
         let server = Server::answering(vec![]);
         let (result, _) =
-            waits(|pause| fetch_intervals(&server.base, None, IntervalsKind::Activities, OCT_25, NOV_17, pause));
+            waits(|pause| fetch_intervals(&server.base, None, IntervalsKind::Activities, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Err(SyncError::NoKey));
         assert!(server.requests().is_empty());
     }
@@ -445,7 +457,7 @@ mod tests {
     fn weather_is_asked_for_without_any_authorization() {
         let body = r#"{"daily":{"time":["2026-11-17"],"temperature_2m_max":[8.5]}}"#;
         let server = Server::answering(vec![(200, "", body)]);
-        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, pause));
+        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Ok(json!({ "daily": { "time": ["2026-11-17"], "temperature_2m_max": [8.5] } })));
         let requests = server.requests();
         assert!(requests[0].starts_with("GET /v1/forecast?latitude=52.52&longitude=13.41&daily="), "{}", requests[0]);
@@ -461,7 +473,7 @@ mod tests {
         }
         // Open-Meteo takes no key, so a 401 from it isn't about one.
         let server = Server::answering(vec![(401, "", "{}")]);
-        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, pause));
+        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Err(unexpected("HTTP 401")));
     }
 
@@ -529,7 +541,7 @@ mod tests {
         let server = Server::answering(vec![(200, "", r#"{"error":"nope"}"#)]);
         assert_eq!(wellness(&server).0, Err(unexpected("the response was not a list")));
         let server = Server::answering(vec![(200, "", "[1,2]")]);
-        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, pause));
+        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Err(unexpected("the response was not a set of daily values")));
     }
 
@@ -537,11 +549,58 @@ mod tests {
     fn no_answer_at_all_is_offline() {
         let dead = dead_base();
         let (result, waited) =
-            waits(|pause| fetch_intervals(&dead, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, pause));
+            waits(|pause| fetch_intervals(&dead, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Err(SyncError::Offline));
         assert!(waited.is_empty());
-        let (result, _) = waits(|pause| fetch_weather(&dead, 52.52, 13.41, OCT_25, NOV_17, pause));
+        let (result, _) = waits(|pause| fetch_weather(&dead, 52.52, 13.41, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(result, Err(SyncError::Offline));
+    }
+
+    #[test]
+    fn every_fetch_the_app_makes_has_a_time_limit_and_a_size_limit() {
+        assert_eq!(LIMITS, Limits { timeout: Duration::from_secs(30), max_body_bytes: 16 * 1024 * 1024 });
+    }
+
+    #[test]
+    fn a_server_that_never_answers_is_given_up_on() {
+        // It takes the connection and the request, and says nothing.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = std::io::copy(&mut stream, &mut std::io::sink());
+        });
+        let limits = Limits { timeout: Duration::from_millis(300), ..LIMITS };
+        let (done, result) = std::sync::mpsc::channel();
+        let began = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let fetched = fetch_intervals(&base, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, limits, &mut |_| {});
+            let _ = done.send(fetched);
+        });
+        // Without a time limit the fetch would wait for ever; this test would then fail here, not hang.
+        let fetched = result.recv_timeout(Duration::from_secs(10)).expect("the fetch has no time limit");
+        assert_eq!(fetched, Err(SyncError::Offline));
+        assert!(began.elapsed() >= Duration::from_millis(250), "gave up after {:?}, before its time", began.elapsed());
+    }
+
+    #[test]
+    fn a_body_larger_than_the_cap_is_refused() {
+        let body: &'static str = Box::leak(format!("[\"{}\"]", "x".repeat(4000)).into_boxed_str());
+        let small = Limits { max_body_bytes: 1024, ..LIMITS };
+        let server = Server::answering(vec![(200, "", body)]);
+        let (result, _) =
+            waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, small, pause));
+        assert_eq!(result, Err(unexpected("the response could not be read")));
+        // The same body under a cap it fits is read.
+        let roomy = Limits { max_body_bytes: 8192, ..LIMITS };
+        let server = Server::answering(vec![(200, "", body)]);
+        let (result, _) =
+            waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, roomy, pause));
+        assert_eq!(result.unwrap().as_array().map(Vec::len), Some(1));
+        // And the weather is under the same cap.
+        let server = Server::answering(vec![(200, "", Box::leak(format!("{{\"daily\":\"{}\"}}", "x".repeat(4000)).into_boxed_str()))]);
+        let (result, _) = waits(|pause| fetch_weather(&server.base, 52.52, 13.41, OCT_25, NOV_17, small, pause));
+        assert_eq!(result, Err(unexpected("the response could not be read")));
     }
 
     /// Calls the real Open-Meteo, which needs no key, for Berlin. Not run by
@@ -550,7 +609,7 @@ mod tests {
     #[test]
     #[ignore = "uses the network"]
     fn open_meteo_answers_the_url_built_here() {
-        let days = fetch_weather(OPEN_METEO_BASE, 52.52, 13.41, "2026-11-10", "2026-11-12", &mut |_| {}).unwrap();
+        let days = fetch_weather(OPEN_METEO_BASE, 52.52, 13.41, "2026-11-10", "2026-11-12", LIMITS, &mut |_| {}).unwrap();
         assert_eq!(days["daily"]["time"], json!(["2026-11-10", "2026-11-11", "2026-11-12"]));
         assert_eq!(days["daily_units"]["temperature_2m_max"], "°C");
         assert_eq!(days["daily_units"]["precipitation_sum"], "mm");
@@ -569,7 +628,7 @@ mod tests {
         ]"#;
         let server = Server::answering(vec![(200, "", Box::leak(body.to_string().into_boxed_str()))]);
         let (result, _) =
-            waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Activities, OCT_25, NOV_17, pause));
+            waits(|pause| fetch_intervals(&server.base, Some(KEY), IntervalsKind::Activities, OCT_25, NOV_17, LIMITS, pause));
         assert_eq!(
             result,
             Ok(json!([
@@ -613,7 +672,7 @@ mod tests {
             vec![(429, "Retry-After: 99\r\n", "SECRET-BODY")],
             vec![(302, "Location: http://127.0.0.1:9/SECRET-BODY\r\n", "")],
         ];
-        let mut errors = vec![fetch_intervals(&dead_base(), Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, &mut |_| {})];
+        let mut errors = vec![fetch_intervals(&dead_base(), Some(KEY), IntervalsKind::Wellness, OCT_25, NOV_17, LIMITS, &mut |_| {})];
         for responses in failures {
             let server = Server::answering(responses);
             errors.push(wellness(&server).0);
