@@ -8,7 +8,7 @@ No streaks. No cloud. Your data lives in plain markdown files you own, and they'
 
 ## Status
 
-Milestones 1 to 3 are built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, the intervals.icu key is stored in the Keychain, the month grid reads and writes day files for every habit type, and sync fills in what intervals.icu and Open-Meteo have. The day panel is next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
+Milestones 1 to 4 are built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, the intervals.icu key is stored in the Keychain, the month grid reads and writes day files for every habit type, sync fills in what intervals.icu and Open-Meteo have, and each day opens into a view of its own with its values, their sources and its notes. The morning pages room is next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
 
 Sync has been built against the intervals.icu API documentation and made-up responses, not against a real account: see [Sync](#sync) for what that leaves unconfirmed.
 
@@ -58,6 +58,16 @@ npm run shots         # screenshots of the UI into .shots/, with end-to-end chec
 The shell gives each opening of the data folder a number. Every file command carries the number it was given, and the shell refuses one whose number is stale, so nothing worked out for one folder (a sync, a cell edit) can be written into another.
 
 The data folder's location is kept in the app's own config (`~/Library/Application Support/com.brianokarski.wetware/config.json`), since it can't live inside the folder it points to. So is the time of the last sync. The intervals.icu key can be saved or removed from the UI but is never handed back to it; sync reads it on the Rust side and sends it only to intervals.icu.
+
+## The day view
+
+Click a day's number in the grid (or press Enter on it) to open that day. Escape, or Month, goes back.
+
+- Every habit's value can be edited there, with the same rules as the grid. Each shows where it came from: `manual`, `intervals`, `open-meteo`, or `unrecorded` for a value the file has no `_sources` entry for.
+- A synced habit's value that was set by hand has a "Use synced value" action. It removes the key and its `_sources` entry from the file, and the next sync fills the value in again.
+- Below the habits: what sync logged by itself (HRV, resting heart rate, sleep score, weather), and every other key in the file's frontmatter, read-only. Nothing in the file is out of sight.
+- Notes are the body of the day's file, as plain text; markdown is not rendered. They save a moment after typing stops and when you leave the field or the day. Saving notes writes only the body: the frontmatter is left byte for byte as it is, and a file that had none (plain text) still has none.
+- A day whose file can't be read or parsed shows the problem and the file's path, and nothing in it can be changed from the app.
 
 ## Sync
 
