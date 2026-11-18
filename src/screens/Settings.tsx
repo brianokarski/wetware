@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Choice, Mono, Row, Table } from "../components/primitives";
-import type { Settings as SettingsData } from "../data";
+import {
+  parseCoordinate, parseWordGoal, TEMPERATURE_UNITS, WEIGHT_UNITS,
+  type Settings as SettingsData, type SettingsPatch,
+} from "../data";
 import { intervalsKey } from "../platform/tauri";
 
 interface Props {
@@ -10,13 +13,8 @@ interface Props {
   pagesGoal: number | null;
   onChooseFolder: () => void;
   onUseSuggested: () => void;
-  onSave: (patch: Partial<SettingsData>) => void;
+  onSave: (patch: SettingsPatch) => void;
   onPagesGoal: (goal: number) => void;
-}
-
-function numberOrNull(text: string): number | null {
-  const n = Number(text);
-  return text.trim() === "" || Number.isNaN(n) ? null : n;
 }
 
 export function Settings(props: Props) {
@@ -62,18 +60,16 @@ export function Settings(props: Props) {
                 <Choice
                   label="Weight unit"
                   value={settings.units.weight}
-                  options={["lb", "kg"] as const}
-                  onChange={(weight) => props.onSave({ units: { ...settings.units, weight } })}
+                  options={WEIGHT_UNITS}
+                  onChange={(weight) => props.onSave({ units: { weight } })}
                 />
               </Row>
               <Row label="Temperature">
                 <Choice
                   label="Temperature unit"
                   value={settings.units.temperature}
-                  options={["F", "C"] as const}
-                  onChange={(temperature) =>
-                    props.onSave({ units: { ...settings.units, temperature } })
-                  }
+                  options={TEMPERATURE_UNITS}
+                  onChange={(temperature) => props.onSave({ units: { temperature } })}
                 />
               </Row>
               <Row label="Sleep">
@@ -89,8 +85,10 @@ export function Settings(props: Props) {
                   inputMode="numeric"
                   value={props.pagesGoal === null ? "" : String(props.pagesGoal)}
                   onCommit={(text) => {
-                    const goal = numberOrNull(text);
-                    if (goal !== null && goal > 0) props.onPagesGoal(Math.round(goal));
+                    const goal = parseWordGoal(text);
+                    if (!goal.ok) return null;
+                    props.onPagesGoal(goal.value);
+                    return String(goal.value);
                   }}
                 />
                 <Mono muted>words / about 250 to a page</Mono>
@@ -103,17 +101,24 @@ export function Settings(props: Props) {
   );
 }
 
-/** Text field that saves on blur or Enter, and reverts on Escape. */
+/**
+ * Text field that saves on blur or Enter, and reverts on Escape. `onCommit`
+ * returns the text as saved, or null if the input is invalid: nothing is
+ * saved then and the field goes back to the saved value.
+ */
 function CommitField(props: {
   label: string;
   value: string;
   placeholder?: string;
   short?: boolean;
   inputMode?: "numeric" | "decimal";
-  onCommit: (text: string) => void;
+  onCommit: (text: string) => string | null;
 }) {
   const [text, setText] = useState(props.value);
   useEffect(() => setText(props.value), [props.value]);
+  const commit = () => {
+    if (text !== props.value) setText(props.onCommit(text) ?? props.value);
+  };
 
   return (
     <input
@@ -125,7 +130,7 @@ function CommitField(props: {
       autoComplete="off"
       value={text}
       onChange={(e) => setText(e.target.value)}
-      onBlur={() => text !== props.value && props.onCommit(text)}
+      onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();
         if (e.key === "Escape") setText(props.value);
@@ -136,11 +141,17 @@ function CommitField(props: {
 
 function LocationRows(props: {
   settings: SettingsData;
-  onSave: (patch: Partial<SettingsData>) => void;
+  onSave: (patch: SettingsPatch) => void;
 }) {
   const { location } = props.settings;
-  const save = (patch: Partial<SettingsData["location"]>) =>
-    props.onSave({ location: { ...location, ...patch } });
+  const shown = (degrees: number | null) => (degrees === null ? "" : String(degrees));
+  /** An emptied field clears the coordinate. Anything else has to be a number in range. */
+  const commit = (kind: "latitude" | "longitude") => (text: string) => {
+    const degrees = parseCoordinate(text, kind);
+    if (!degrees.ok) return null;
+    props.onSave({ location: { [kind]: degrees.value } });
+    return shown(degrees.value);
+  };
 
   return (
     <>
@@ -149,7 +160,11 @@ function LocationRows(props: {
           label="City"
           placeholder="Name, for your own reference"
           value={location.name}
-          onCommit={(name) => save({ name: name.trim() })}
+          onCommit={(text) => {
+            const name = text.trim();
+            props.onSave({ location: { name } });
+            return name;
+          }}
         />
       </Row>
       <Row label="Latitude">
@@ -158,8 +173,8 @@ function LocationRows(props: {
           short
           inputMode="decimal"
           placeholder="00.00"
-          value={location.latitude === null ? "" : String(location.latitude)}
-          onCommit={(text) => save({ latitude: numberOrNull(text) })}
+          value={shown(location.latitude)}
+          onCommit={commit("latitude")}
         />
       </Row>
       <Row label="Longitude">
@@ -168,8 +183,8 @@ function LocationRows(props: {
           short
           inputMode="decimal"
           placeholder="00.00"
-          value={location.longitude === null ? "" : String(location.longitude)}
-          onCommit={(text) => save({ longitude: numberOrNull(text) })}
+          value={shown(location.longitude)}
+          onCommit={commit("longitude")}
         />
       </Row>
     </>

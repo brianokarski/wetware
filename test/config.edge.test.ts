@@ -234,7 +234,7 @@ describe("S6: parseSettings checks every field", () => {
       { units: { weight: "stone" as never } },
       { units: { temperature: "K" as never } },
     ]) {
-      expect(() => saveSettings(fs, patch)).toThrow(SettingsError);
+      await expect(saveSettings(fs, patch)).rejects.toThrow(SettingsError);
     }
     expect(fs.files.get(SETTINGS_FILE)).toBe(raw);
   });

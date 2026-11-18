@@ -104,10 +104,11 @@ function checkPatch({ location, units }: SettingsPatch): void {
  * Patches settings.yaml in place, one value at a time, so comments, hand-added
  * keys and everything else in the file survive. A field that already has the
  * given value is not written, so defaults never land on disk by themselves.
+ * Rejects with `SettingsError`, writing nothing, if any value isn't valid.
  */
 export function saveSettings(fs: DataFs, patch: SettingsPatch): Promise<Settings> {
-  checkPatch(patch);
   return inTurn(fs, SETTINGS_FILE, async () => {
+    checkPatch(patch);
     const raw = await fs.read(SETTINGS_FILE);
     const current = parseSettings(raw) as unknown as Record<string, Record<string, unknown>>;
     const ops: YamlOp[] = [];
