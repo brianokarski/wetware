@@ -1257,17 +1257,22 @@ const scenarios = [
       assert.equal(await t.syncStatus(), "Last synced 09:41");
       assert.equal(await t.problem(), "Sync: 24 days updated.");
 
-      // What the screens say of syncing is about the folder now open. Another folder, whose own sync reaches
-      // nothing, has not been synced, and has no Strava activities to speak of.
+      // What the screens say of syncing is about the folder now open. Another folder has not been synced and
+      // has no Strava activities to speak of, from the moment it opens: not only once its own sync has run.
       await t.nav("Settings");
       await t.page.waitForSelector('input[aria-label="intervals.icu API key"]');
       assert.equal(await t.row("Strava"), "2 activities can't be read");
+      const fetched = (await t.fetches()).length;
       await t.page.evaluate(() => {
         window.wetware.pick("same");
+        window.wetware.slowFetches(500);
         window.wetware.failIntervals({ kind: "offline" });
         window.wetware.failWeather({ kind: "offline" });
       });
       await t.page.click(".row-value .action");
+      await t.page.waitForFunction((n) => window.wetware.fetches().length > n, {}, fetched);
+      assert.equal(await t.problem(), "Sync: 24 days updated.", "the new folder's sync had already finished");
+      assert.equal(await t.row("Strava"), null);
       await t.told("could not be reached");
       assert.equal(await t.row("Strava"), null);
       await t.nav("Month");
