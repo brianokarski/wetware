@@ -11,6 +11,12 @@
  * path (the default), a different folder with files of its own, or nothing
  * at all (cancelled): see `pick` below.
  *
+ * It keeps the shell's two rules about order as well. Writes to one file
+ * land one at a time, in the order they were asked for, so a slow one holds
+ * back the ones behind it. And a close can be held: `askFlush` does what the
+ * shell does when the window is asked to close, and says how long the app
+ * took to answer that everything typed is saved.
+ *
  * There is no network either. The two fetch commands answer from
  * test/fixtures/sync (made-up intervals.icu data, and a real Open-Meteo
  * response for Berlin), or with nothing new.
@@ -45,6 +51,8 @@ const answers = params.get("sync") ?? "quiet";
 const key = params.get("key") ?? "none";
 const [year, month, day] = (params.get("today") ?? "2026-11-17").split("-").map(Number);
 let clock = new Date(year, month - 1, day, 9, 41);
+/** How long the shell holds a close for the app's answer. */
+const FLUSH_LIMIT_MS = 3000;
 setClock(() => clock);
 
 const fixture = import.meta.glob("../test/fixtures/data-folder/**/*", {
@@ -74,6 +82,8 @@ const state = {
   refused: [] as string[],
   /** Every write that was let through: the folder it landed in, and the number it carried. */
   writes: [] as { root: string; path: string; folder: number }[],
+  /** Every file the app has had removed. */
+  removed: [] as string[],
   keyStored: key !== "none",
   /** Whether intervals.icu turns the stored key down. Saving another key makes it one that works. */
   keyRejected: key === "rejected",
@@ -102,7 +112,27 @@ const state = {
   calls: [] as string[],
   /** What each command was sent and what it answered, as text, for checking where a piece of text has been. */
   traffic: [] as { command: string; path: string; sent: string; answered: string }[],
+  /** The last write or removal asked for, for each file: the next one for that file waits for it, as in the shell. */
+  lines: new Map<string, Promise<unknown>>(),
+  /** Called when the app answers that everything typed is saved. */
+  flushed: null as (() => void) | null,
+  /** What the app is listening for from the shell: for each event, the callbacks to run. */
+  listeners: new Map<string, number[]>(),
 };
+
+/** Sends the app an event, as the shell does: every callback now listening for it is run. */
+function send(event: string) {
+  const internals = (window as unknown as { __TAURI_INTERNALS__: { runCallback: (id: number, data: unknown) => void } }).__TAURI_INTERNALS__;
+  for (const handler of state.listeners.get(event) ?? []) internals.runCallback(handler, { event, id: handler, payload: null });
+}
+
+/** Runs `work` for a file once everything asked for that file before it has finished, however it finished. */
+function inLine<T>(root: string, path: string, work: () => Promise<T>): Promise<T> {
+  const key = `${root}/${path}`;
+  const mine = (state.lines.get(key) ?? Promise.resolve()).then(work, work);
+  state.lines.set(key, mine.catch(() => {}));
+  return mine;
+}
 
 /** The same rule as the shell: a relative path of plain names. */
 function checked(path: unknown): string {
@@ -193,14 +223,38 @@ async function answerTo(command: string, args: Record<string, unknown>): Promise
     }
     case "data_write": {
       const path = checked(args.path);
+      // The folder it is for, and its place in line for the file, are settled as it arrives.
       const { root, files } = filesFor(command, args.folder);
-      await delay(state.writeDelays, path);
-      const refusal = state.writeErrors.get(path) ?? state.writeError;
-      if (refusal) throw refusal;
-      files.set(path, String(args.contents));
-      state.writes.push({ root, path, folder: Number(args.folder) });
-      return null;
+      return inLine(root, path, async () => {
+        await delay(state.writeDelays, path);
+        const refusal = state.writeErrors.get(path) ?? state.writeError;
+        if (refusal) throw refusal;
+        files.set(path, String(args.contents));
+        state.writes.push({ root, path, folder: Number(args.folder) });
+        return null;
+      });
     }
+    case "data_remove": {
+      const path = checked(args.path);
+      const { root, files } = filesFor(command, args.folder);
+      return inLine(root, path, async () => {
+        if (!files.has(path)) return null;
+        if (files.get(path) !== String(args.expected)) throw `${path.split("/").pop()} has changed, so it was not removed`;
+        files.delete(path);
+        state.removed.push(path);
+        return null;
+      });
+    }
+    case "flush_done":
+      state.flushed?.();
+      return null;
+    // The shell's events, as far as the app uses them: it listens, and stops listening.
+    case "plugin:event|listen":
+      state.listeners.set(String(args.event), [...(state.listeners.get(String(args.event)) ?? []), Number(args.handler)]);
+      return args.handler;
+    case "plugin:event|unlisten":
+      state.listeners.set(String(args.event), (state.listeners.get(String(args.event)) ?? []).filter((handler) => handler !== Number(args.eventId)));
+      return null;
     case "data_list": {
       const prefix = `${checked(args.dir)}/`;
       const { files } = filesFor(command, args.folder);
@@ -270,6 +324,29 @@ const harness = {
   syncState: () => ({ ...state.sync }),
   /** Move the app's clock to another time of the same day. */
   setTime: (hours: number, minutes: number) => void (clock = new Date(year, month - 1, day, hours, minutes)),
+  /** Move the app's clock to a time on another day of the month. Nothing is told: no focus, no tick. */
+  setDay: (date: number, hours: number, minutes: number) => void (clock = new Date(year, month - 1, date, hours, minutes)),
+  /** The files the app has had removed. */
+  removed: () => [...state.removed],
+  /**
+   * What the shell does when the window is asked to close: asks the app to
+   * save what is typed, and waits for its answer, for the limit at most.
+   * Resolves to how long the answer took in milliseconds, or -1 if none came.
+   */
+  askFlush: () =>
+    new Promise<number>((resolve) => {
+      const began = performance.now();
+      const limit = setTimeout(() => {
+        state.flushed = null;
+        resolve(-1);
+      }, FLUSH_LIMIT_MS);
+      state.flushed = () => {
+        clearTimeout(limit);
+        state.flushed = null;
+        resolve(Math.round(performance.now() - began));
+      };
+      send("flush-asked");
+    }),
 };
 (window as unknown as { wetware: typeof harness }).wetware = harness;
 
