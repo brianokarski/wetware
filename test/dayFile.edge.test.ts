@@ -128,6 +128,47 @@ describe("B2: patching one key leaves every other byte alone", () => {
     expect(updateDayFile(null, DATE, {})).toBe("");
   });
 
+  it("never lets notes turn into frontmatter in a file that has none (M4 review SF-1)", () => {
+    const plain = "Plain note made in Obsidian.\n";
+    // Notes that open with a rule and have another below: the file gets its own frontmatter, and they stay notes.
+    const ruled = "---\nMorning\n---\nPlain note made in Obsidian.\n";
+    const written = updateDayFile(plain, DATE, { notes: ruled });
+    expect(written).toBe(`---\ndate: 2026-11-17\n---\n${ruled}`);
+    expect(parseDay(written, DATE)).toMatchObject({ notes: ruled, values: {}, error: null });
+    // Notes that look like real keys set nothing.
+    const keys = "---\nrun: true\nmood: 5\n---\n";
+    const safe = updateDayFile(plain, DATE, { notes: keys });
+    expect(parseDay(safe, DATE)).toMatchObject({ notes: keys, values: {}, error: null });
+    expect(safe).toBe(`---\ndate: 2026-11-17\n---\n${keys}`);
+    // The same for what would be taken for frontmatter out of place: a blank line, then the fences.
+    const below = "\n---\nMorning\n---\n";
+    for (const raw of [plain, "\n", "\uFEFFtext\r\n"]) {
+      for (const notes of [ruled, keys, below, "---yaml\na: 1\n---\n", "---\n---\n"]) {
+        const next = updateDayFile(raw, DATE, { notes });
+        const day = parseDay(next, DATE);
+        expect(day.error, JSON.stringify([raw, notes])).toBeNull();
+        expect(day.values, JSON.stringify([raw, notes])).toEqual({});
+        expect(day.notes.replace(/^\n/, ""), JSON.stringify([raw, notes])).toBe(notes.replace(/^\n/, ""));
+        // And written back as read, it is the same file.
+        expect(updateDayFile(next, DATE, { notes: day.notes })).toBe(next);
+      }
+    }
+    // A lone rule, or a rule with nothing closing it, is only a rule: the file stays plain text.
+    expect(updateDayFile(plain, DATE, { notes: "---\nMorning\n" })).toBe("---\nMorning\n");
+    expect(updateDayFile(plain, DATE, { notes: "Above.\n---\nBelow.\n---\n" })).toBe("Above.\n---\nBelow.\n---\n");
+    // In a file that has frontmatter, notes that open with a rule were always safe.
+    const dated = "---\ndate: 2026-11-17\nmood: 4\n---\n\nold\n";
+    expect(parseDay(updateDayFile(dated, DATE, { notes: keys }), DATE)).toMatchObject({ notes: keys, values: { mood: 4 } });
+  });
+
+  it("keeps the whole frontmatter as parsed, bookkeeping and all, for showing what is in the file", () => {
+    const day = parseDay("---\ndate: 2026-11-18\nmood: 4\n_sources:\n  mood: manual\n  run: 5\n_synced_at: 2026-11-17T06:27:00-08:00\n---\n", DATE);
+    expect(day.raw).toEqual({ date: "2026-11-18", mood: 4, _sources: { mood: "manual", run: 5 }, _synced_at: "2026-11-17T06:27:00-08:00" });
+    expect(day.values).toEqual({ mood: 4 });
+    expect(parseDay(null, DATE).raw).toEqual({});
+    expect(parseDay("---\nmood: 1\nmood: 2\n---\n", DATE).raw).toEqual({});
+  });
+
   it("works when the closing fence ends the file", () => {
     expect(updateDayFile("---\ndate: 2026-11-17\nmood: 1\n---", DATE, mood4)).toBe("---\ndate: 2026-11-17\nmood: 4\n---");
     expect(updateDayFile("---\ndate: 2026-11-17\n---", DATE, { body: "notes\n" })).toBe("---\ndate: 2026-11-17\n---\n\nnotes\n");

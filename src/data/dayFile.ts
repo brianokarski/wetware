@@ -23,6 +23,12 @@ export interface Day {
    * hand. `values` and `sources` are empty then, and writes will throw.
    */
   error: string | null;
+  /**
+   * The whole frontmatter as parsed, bookkeeping included: `date`,
+   * `_sources` and `_synced_at` as the file has them, whatever their type.
+   * For showing what is in the file. Empty if there is none or it can't be read.
+   */
+  raw: Record<string, unknown>;
 }
 
 export interface DayPatch {
@@ -233,6 +239,7 @@ export function parseDay(raw: string | null, date: string): Day {
     body: parts.body,
     notes: toNotes(parts.body),
     error,
+    raw: data,
   };
 }
 
@@ -300,8 +307,14 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
     throw e;
   }
 
-  // No frontmatter before and none to write: the file stays the plain text it was.
-  if (parts.open === "" && yaml === "") return parts.bom + body;
+  if (parts.open === "" && yaml === "") {
+    // No frontmatter before and none to write: the file stays the plain text it was. Unless that text
+    // would now read as frontmatter itself (notes that open with a `---` line and have another further
+    // down): then the file is given its own first, so that the notes stay notes.
+    const reads = split(parts.bom + body);
+    if (reads.open === "" && !reads.nearMiss) return parts.bom + body;
+    yaml = patchYaml("", [{ op: "set", path: ["date"], value: date, first: true }], { eol });
+  }
   const open = parts.open || `---${eol}`;
   let close = parts.close || `---${eol}`;
   if (body !== "" && !close.endsWith("\n")) close += eol;
@@ -315,6 +328,32 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
 export function readDay(fs: DataFs, date: string): Promise<Day> {
   const path = dayPath(date);
   return inTurn(fs, path, async () => parseDay(await fs.read(path), date));
+}
+
+/** The notes on disk are not the notes an edit started from: someone else has changed them since. */
+export class NotesChangedError extends Error {
+  /** The day as it is on disk now. */
+  day: Day;
+
+  constructor(day: Day) {
+    super("The notes were changed outside the app");
+    this.name = "NotesChangedError";
+    this.day = day;
+  }
+}
+
+/**
+ * Writes a day's notes, but only over the notes they were written from.
+ * `from` is the text the edit started with. If the file's notes are anything
+ * else when this write's turn comes, nothing is written and it rejects with
+ * `NotesChangedError`, which carries the day as it now is: the app never
+ * writes over a body it hasn't shown.
+ */
+export function writeNotes(fs: DataFs, date: string, notes: string, from: string): Promise<Day> {
+  return writeDay(fs, date, (day) => {
+    if (day.notes !== from) throw new NotesChangedError(day);
+    return { notes };
+  });
 }
 
 /**

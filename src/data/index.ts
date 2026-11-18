@@ -8,4 +8,6 @@ export * from "./month";
 export * from "./cells";
 export * from "./dayView";
 export * from "./notices";
+export * from "./autosave";
+export { FileTimeoutError, FILE_TIME_LIMIT_MS } from "./queue";
 export { YamlPatchError } from "./yamlPatch";
