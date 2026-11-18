@@ -8,7 +8,7 @@ No streaks. No cloud. Your data lives in plain markdown files you own, and they'
 
 ## Status
 
-Milestones 1 to 4 are built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, the intervals.icu key is stored in the Keychain, the month grid reads and writes day files for every habit type, sync fills in what intervals.icu and Open-Meteo have, and each day opens into a view of its own with its values, their sources and its notes. The morning pages room is next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
+Milestones 1 to 5 are built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, the intervals.icu key is stored in the Keychain, the month grid reads and writes day files for every habit type, sync fills in what intervals.icu and Open-Meteo have, each day opens into a view of its own with its values, their sources and its notes, and morning pages have a writing room. The dot calendar and the monthly roll-up are next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
 
 Sync has been built against the intervals.icu API documentation and made-up responses, not against a real account: see [Sync](#sync) for what that leaves unconfirmed.
 
@@ -49,6 +49,7 @@ npm run shots         # screenshots of the UI into .shots/, with end-to-end chec
 |------|------------|
 | `src/styles/tokens.css` | Every color, font, size, space, and rule weight. Restyle the app here. |
 | `src/data/` | Pure TypeScript data layer: habits, settings, day files. No React. |
+| `src/data/pages.ts` | The one module that reads and writes morning pages text. Only the writing room may read it. |
 | `src/sync/` | Pure TypeScript sync rules: source JSON in, day values and their sources out. No React, no network. |
 | `src/platform/tauri.ts` | The only place the UI talks to the Rust shell. |
 | `src/screens/`, `src/components/` | React UI. No raw colors or sizes; tokens only. |
@@ -78,6 +79,30 @@ Click a day's number in the grid (or press Enter on it) to open that day. Escape
 - When the window comes back to the front, the open day is read again. Values follow the file. Notes follow it too, if nothing unsaved is typed here.
 - Notes are only ever saved over the text they were typed from. If the file's notes have changed since, nothing is written. The typing stays in the field, and the app asks: "Keep what is typed here" writes it over the file's text; "Take the file's text" puts the file's text in the field. Until you choose, nothing is saved and the day can't be left.
 - Values don't need the question: each is written as its own key, beside whatever else changed.
+
+## Morning pages
+
+The writing room takes the whole window: no navigation, no message line, only the date, how far along the writing is, and the text. Three ways in: "Pages" in the navigation (today's pages), the quiet line beside the month's name while today's pages are short of their goal, and the Morning pages box of today or any past day in the grid (click it, or press Enter on it). Escape, or Leave, goes back to the month.
+
+- The text is one field. Every 250 words a new page begins, and its number is set in the margin beside the line it begins on. The strip at the top says which page the writing has reached ("page 2 of 3") and the count against the goal ("412 / 750 words"). The goal is the Morning pages habit's, set in Settings. Reaching it changes nothing in the room; in the grid, the day's box gets its ✕.
+- A word is whatever is left when the text is split on white space. Writing with no spaces between words counts by its runs.
+- It saves as notes do: a moment (0.8 s) after typing stops, at least every 3 s while it doesn't, and at once when you leave the room or the window goes to the background, is hidden or is asked to close.
+- There is no timer, and nothing is said about other days.
+
+**Where the text goes.** Into `pages/YYYY-MM-DD.md`, exactly as typed, and nowhere else. The only thing that leaves is the word count, written to the day file as the Morning pages habit's value (`morning_pages_words`) with `morning_pages` as its source.
+
+- One module (`src/data/pages.ts`) reads and writes these files, and only the writing room is allowed its read function. `test/pages.privacy.test.ts` reads the source and fails if anything else names that function or the pages folder, or if the app gains anywhere for text to go: browser storage, the console, a network call of its own.
+- A screenshot scenario (`pages-private`) writes a phrase in the room and then looks for it everywhere else: every other file, browser storage, everything logged, everything sent to the shell. It has to be in the pages file only.
+- Messages about a pages file name the file and never quote it.
+- The shell creates files under `pages/`, and the folder itself, readable and writable by you alone (`0600`, `0700`). A file that is already there keeps the permissions it has.
+
+**The count.**
+
+- The room keeps the day file's count while the count is its own: there is none yet, or `_sources` says `morning_pages`. Emptying the text takes the count back out.
+- A count set by hand is left as it is: one `_sources` calls `manual` (a number typed on the Morning pages box in the grid, or into the day view), or one with no `_sources` entry at all. The room still saves the text, and says below it that the count is not its own.
+- If the text is saved and the count can't be (the day file needs fixing by hand, say), the room says so, and the count is written by the next save that can.
+
+**If the file changes outside the app while the room is open**, the rule is the day view's: the text is only ever saved over the text it was typed from. Coming back to the window, the file is read again, and taken as it is if nothing unsaved is typed. If something is, nothing is written and the room asks whether to keep what is typed or take the file's text. Until you choose, nothing is saved and the room can't be left.
 
 ## Sync
 
