@@ -308,8 +308,13 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
   return parts.bom + open + yaml + close + body;
 }
 
-export async function readDay(fs: DataFs, date: string): Promise<Day> {
-  return parseDay(await fs.read(dayPath(date)), date);
+/**
+ * Reads one day. It takes its turn behind any write to that day already
+ * asked for, so what it returns is never older than a change made just before.
+ */
+export function readDay(fs: DataFs, date: string): Promise<Day> {
+  const path = dayPath(date);
+  return inTurn(fs, path, async () => parseDay(await fs.read(path), date));
 }
 
 /**

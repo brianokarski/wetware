@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  currentNotice, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, reason, saveSettings, setMorningPagesGoal,
+  currentNotice, dateKey, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, reason, saveSettings, setMorningPagesGoal,
   SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
   type DataFs, type Habit, type Notice, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
@@ -11,6 +11,7 @@ import {
 } from "./platform/tauri";
 import { useSync } from "./platform/useSync";
 import { testConnection } from "./sync";
+import { DayPanel } from "./screens/DayPanel";
 import { Grid } from "./screens/Grid";
 import { Settings } from "./screens/Settings";
 
@@ -45,6 +46,10 @@ export default function App() {
   const [loads, setLoads] = useState(0);
   /** Whether the folder now open has had the sync that runs when a folder opens. */
   const syncedOnOpen = useRef(false);
+  /** The day open in the day view, in place of the month grid. Null: the grid is showing. */
+  const [day, setDay] = useState<string | null>(null);
+  /** The day the grid opens on, with focus on its header: the one the day view was last showing. */
+  const [returnTo, setReturnTo] = useState<string | null>(null);
   const today = useToday();
 
   /** Puts a notice on the message line. It stays until `settle` is called with its key, or it is dismissed. */
@@ -103,6 +108,8 @@ export default function App() {
   const openFolder = async (opened: OpenFolder | null) => {
     if (!opened) return;
     setFolder(opened);
+    setDay(null);
+    setReturnTo(null);
     syncedOnOpen.current = false;
     await loadFolder(folderFs(opened.id));
   };
@@ -116,8 +123,17 @@ export default function App() {
     settle(key);
   };
 
-  /** The day panel arrives in Milestone 4. Until then a day header has nothing to open. */
-  const openDay = useCallback((_date: string) => {}, []);
+  /** Opens a day in place of the month. A day that hasn't come yet has nothing to open. */
+  const openDay = useCallback((date: string) => {
+    if (date <= dateKey(now())) setDay(date);
+  }, []);
+  /** Back to the month, with the keyboard on the header of the day that was open. */
+  const closeDay = useCallback(() => {
+    setDay((open) => {
+      if (open) setReturnTo(open);
+      return null;
+    });
+  }, []);
 
   if (!ready) return null;
   const notice = currentNotice(notices);
@@ -144,12 +160,28 @@ export default function App() {
       </div>
 
       <main className="app-main">
-        {screen === "month" && folder && fs && (
+        {screen === "month" && folder && fs && day !== null && (
+          <DayPanel
+            key={`${folder.id} ${day}`}
+            fs={fs}
+            habits={habits}
+            date={day}
+            today={today}
+            temperature={settings?.units.temperature ?? "F"}
+            revision={sync.revision}
+            onClose={closeDay}
+            onGo={openDay}
+            notify={notify}
+            settle={settle}
+          />
+        )}
+        {screen === "month" && folder && fs && day === null && (
           <Grid
             key={folder.id}
             fs={fs}
             habits={habits}
             today={today}
+            openAt={returnTo}
             onOpenDay={openDay}
             notify={notify}
             settle={settle}
@@ -183,7 +215,12 @@ export default function App() {
               className="nav-item"
               aria-current={item.id === screen ? "page" : undefined}
               disabled={item.id === null || (item.id === "month" && !dataRoot)}
-              onClick={() => item.id && setScreen(item.id)}
+              onClick={() => {
+                if (!item.id) return;
+                // "Month" is the month: from a day, it goes back to the grid.
+                if (item.id === "month") closeDay();
+                setScreen(item.id);
+              }}
             >
               {item.label}
             </button>

@@ -1,7 +1,7 @@
 /** S8: read-modify-write helpers must not interleave on one file. */
 import { describe, expect, it } from "vitest";
 import {
-  archiveHabit, HABITS_FILE, loadHabits, memoryFs, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
+  archiveHabit, HABITS_FILE, loadHabits, loadMonth, memoryFs, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
   writeDay, type DataFs,
 } from "../src/data";
 import { inTurn } from "../src/data/queue";
@@ -172,6 +172,37 @@ describe("a change worked out from the day as it is on disk", () => {
     })).rejects.toThrow(/Map keys must be unique/);
     expect(fs.files.get(path)).toBe(broken);
     await expect(writeDay(fs, "2026-11-17", () => null)).resolves.toMatchObject({ date: "2026-11-17" });
+  });
+});
+
+describe("reading after a write that was asked for a moment before", () => {
+  it("a day read behind a slow write sees what it wrote", async () => {
+    const fs = slowFs({ "days/2026-11-17.md": "---\ndate: 2026-11-17\n---\n" });
+    const writing = writeDay(fs, "2026-11-17", { notes: "Typed just before leaving.\n" });
+    // Asked for at once, as the grid does when the day view closes on unsaved notes.
+    const read = await readDay(fs, "2026-11-17");
+    expect(read.notes).toBe("Typed just before leaving.\n");
+    await writing;
+    expect(fs.busiest).toBe(1);
+  });
+
+  it("a month loaded behind the making of a day file has that day in it", async () => {
+    const fs = slowFs({ "days/2026-11-16.md": "---\ndate: 2026-11-16\nmood: 4\n---\n" });
+    const making = writeDay(fs, "2026-11-09", { notes: "Rest day." });
+    const clearing = writeDay(fs, "2026-11-16", { values: { mood: null } });
+    const month = await loadMonth(fs, { year: 2026, month: 11 });
+    expect(month["2026-11-09"].notes).toBe("Rest day.");
+    expect(month["2026-11-16"].values.mood).toBeNull();
+    await Promise.all([making, clearing]);
+  });
+
+  it("a write that fails doesn't hold up the reading that follows", async () => {
+    const inner = slowFs();
+    const fs: DataFs = { ...inner, write: () => Promise.reject(new Error("No space left on device")) };
+    const failing = writeDay(fs, "2026-11-09", { notes: "Rest day." });
+    const month = await loadMonth(fs, { year: 2026, month: 11 });
+    expect(month["2026-11-09"]).toMatchObject({ notes: "", error: null });
+    await expect(failing).rejects.toThrow("No space left");
   });
 });
 

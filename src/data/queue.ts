@@ -22,3 +22,13 @@ export function inTurn<T>(fs: object, path: string, task: () => Promise<T>): Pro
   });
   return result;
 }
+
+/**
+ * Resolves once everything queued so far for this `fs` has run, whatever
+ * came of it. For a reader that must not miss a write asked for a moment
+ * before it: a listing of a folder, say, taken as a new file is being made.
+ */
+export function settled(fs: object): Promise<void> {
+  const waiting = queues.get(fs);
+  return waiting ? Promise.all([...waiting.values()]).then(() => undefined) : Promise.resolve();
+}

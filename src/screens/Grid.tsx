@@ -13,8 +13,13 @@ interface Props {
   habits: Habit[];
   /** Today's date key. */
   today: string;
-  /** Opens the day panel. It arrives in Milestone 4; until then the hook does nothing. */
+  /** Opens a day in the day view. Days that haven't come yet can't be opened. */
   onOpenDay: (date: string) => void;
+  /**
+   * A day to open the grid on, with the keyboard on its header: the day the
+   * day view was showing when it was closed. Null: this month, at today.
+   */
+  openAt: string | null;
   /**
    * Puts something on the message line: a failed save, input that wasn't
    * accepted, a file that needs fixing. `key` says what it is about.
@@ -38,6 +43,7 @@ interface Position {
 }
 
 const HEADER_ROW = -1;
+
 /**
  * Most characters a value gets in its box: when the boxes are wide enough to
  * set that many legibly, and when they aren't. The full value is always in
@@ -53,10 +59,14 @@ const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSync }: Props) {
-  const [month, setMonth] = useState<YearMonth>(() => monthOf(today));
+export function Grid({ fs, habits, today, onOpenDay, openAt, notify, settle, sync, onSync }: Props) {
+  const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt ?? today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
-  const [wanted, setFocus] = useState<Position>(() => ({ row: 0, col: Number(today.slice(8)) - 1 }));
+  const [wanted, setFocus] = useState<Position>(() =>
+    openAt ? { row: HEADER_ROW, col: Number(openAt.slice(8)) - 1 } : { row: 0, col: Number(today.slice(8)) - 1 },
+  );
+  /** Whether the keyboard is still to be put on the header of the day the grid was opened at. */
+  const returning = useRef(openAt !== null);
   /** The open editor. `replace`: the text is selected when it opens, so typing replaces it. */
   const [editing, setEditing] = useState<(Position & { text: string; replace: boolean }) | null>(null);
   const table = useRef<HTMLTableElement>(null);
@@ -132,6 +142,11 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
   useEffect(() => {
     if (editing === null && refocus.current) {
       refocus.current = false;
+      element(focus)?.focus();
+    }
+    // Back from a day: the keyboard goes where it was when the day was opened, or to that day's header.
+    if (returning.current && element(focus)) {
+      returning.current = false;
       element(focus)?.focus();
     }
   });
@@ -353,9 +368,10 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
                     data-date={date}
                     tabIndex={focus.row === HEADER_ROW && focus.col === col ? 0 : -1}
                     aria-label={facts.filter(Boolean).join(", ")}
+                    aria-disabled={date > today || undefined}
                     title={day?.error ? `${dayPath(date)}: ${day.error}` : undefined}
                     onFocus={() => setFocus({ row: HEADER_ROW, col })}
-                    onClick={() => onOpenDay(date)}
+                    onClick={() => date <= today && onOpenDay(date)}
                   >
                     <span className="grid-weekday" aria-hidden="true">{weekdayInitial(date)}</span>
                     <span aria-hidden="true">{Number(date.slice(8))}</span>

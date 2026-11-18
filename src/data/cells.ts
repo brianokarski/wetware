@@ -9,6 +9,7 @@ import type { DataFs } from "./fs";
 import { dayKey, type Habit, type HabitType } from "./habits";
 import type { Parsed } from "./input";
 import { daysInMonth, monthDates, type YearMonth } from "./month";
+import { settled } from "./queue";
 
 /** SPEC §5.3. `done` means the cell has a value; see `Cell.met` for progress habits. */
 export type CellState = "done" | "missed" | "no_data" | "pending" | "future";
@@ -204,6 +205,8 @@ export async function writeCell(fs: DataFs, habit: Habit, date: string, value: C
  * back empty with `error` set, like a file that can't be parsed.
  */
 export async function loadMonth(fs: DataFs, ym: YearMonth): Promise<Record<string, Day>> {
+  // A day file being made or changed as the month is asked for is in the month that comes back.
+  await settled(fs);
   const present = new Set(await fs.list(DAYS_DIR));
   const load = async (date: string): Promise<Day> => {
     if (!present.has(`${date}.md`)) return parseDay(null, date);
