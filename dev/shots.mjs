@@ -1264,23 +1264,31 @@ const scenarios = [
       await t.told("Sync: 24 days updated.");
       await t.stateIs("run", 17, "done");
 
-      // The month's re-read is held up by one slow file, a day ahead that sync doesn't touch.
+      // The month's re-read is held up by one slow file: a day ahead, which sync doesn't touch. Its notes mark
+      // is how the screen shows that the re-read has landed.
+      const reread = '.grid-day-button[data-date="2026-11-20"] .grid-notes';
       await t.page.evaluate(() => {
-        window.wetware.write("days/2026-11-20.md", "---\ndate: 2026-11-20\n---\n");
+        window.wetware.write("days/2026-11-20.md", "---\ndate: 2026-11-20\n---\n\nPacked for the trip.\n");
         window.wetware.slowRead("days/2026-11-20.md", 700);
         window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
       });
       await t.page.click(".month .action");
       await t.told("Sync: 1 day updated.");
-      // The sync is done and its result not yet on screen: the re-read is under way. An edit made now...
+      // The sync is done and the re-read is under way: the 16th has been read, the 20th is still coming.
+      await t.page.waitForFunction(() => window.wetware.calls().lastIndexOf("data_list") > window.wetware.calls().lastIndexOf("data_write"));
+      await t.saved();
+      assert.equal(await t.count(reread), 0, "the re-read had landed before the edit was made");
+      // An edit made now...
       assert.equal(await t.state("meditate", 16), "done");
       await t.click("meditate", 16);
       await t.saved();
       assert.match(await t.file("days/2026-11-16.md"), /^meditate: false$/m);
       assert.equal(await t.state("meditate", 16), "missed");
-      // ...is still what the screen shows once the re-read lands, along with what the sync wrote.
-      await t.stateIs("run", 17, "done");
+      assert.equal(await t.count(reread), 0, "the re-read had landed before the edit was saved");
+      // ...is still what the screen shows once the re-read lands.
+      await t.page.waitForSelector(reread);
       assert.equal(await t.state("meditate", 16), "missed", "the re-read put back what was on disk before the edit");
+      assert.equal(await t.state("run", 17), "done");
       await t.page.evaluate(() => window.wetware.slowRead("days/2026-11-20.md", null));
 
       // An edit still on its way to disk when the re-read lands. October: the days before the 25th are outside
