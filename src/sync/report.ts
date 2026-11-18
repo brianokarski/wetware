@@ -1,5 +1,5 @@
 /** What a sync has to say for itself, in plain words, for the message line and the grid header. */
-import { dateKey, dayPath, monthAndDay } from "../data";
+import { dateKey, dayPath, shortDate } from "../data";
 import type { SourceOutcome, SyncReport } from "./run";
 import type { SyncProblem } from "./problems";
 
@@ -66,10 +66,10 @@ export function reachedASource(report: SyncReport): boolean {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** "Last synced 06:27", with the day in front if it wasn't today. */
-export function lastSyncedLabel(at: Date | null, now: Date): string {
+/** "Last synced 06:27", with the day in front if it wasn't today. `today` is a date key. */
+export function lastSyncedLabel(at: Date | null, today: string): string {
   if (at === null) return "Not synced yet";
   const time = `${pad(at.getHours())}:${pad(at.getMinutes())}`;
   const day = dateKey(at);
-  return day === dateKey(now) ? `Last synced ${time}` : `Last synced ${monthAndDay(day)}, ${time}`;
+  return day === today ? `Last synced ${time}` : `Last synced ${shortDate(day)}, ${time}`;
 }

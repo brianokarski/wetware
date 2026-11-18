@@ -377,6 +377,31 @@ describe("a day file that can't take the change", () => {
   });
 });
 
+describe("a sync that is called off", () => {
+  it("touches no file after it is told to stop", async () => {
+    const fs = folderFs();
+    const before = new Map(fs.files);
+    let wanted = true;
+    const stopping: DataFs = { ...fs, write: async (p, text) => (await fs.write(p, text), void (wanted = !p.includes("2026-10-27"))) };
+    const report = await runSync(await job(stopping, { stillWanted: () => wanted }));
+    expect(report.stopped).toBe(true);
+    expect(report.changed).toEqual(["2026-10-25", "2026-10-26", "2026-10-27"]);
+    for (const [file, text] of fs.files) {
+      if (!report.changed.includes(file.slice(5, 15))) expect(text, file).toBe(before.get(file));
+    }
+    expect(fs.files.size).toBe(before.size + 3);
+
+    // Called off before it began: nothing is read or written at all.
+    const untouched = folderFs();
+    const reads: string[] = [];
+    const watching: DataFs = { ...untouched, read: (p) => (reads.push(p), untouched.read(p)) };
+    const none = await runSync({ fs: watching, sources: fakeSources(), habits: SEED_HABITS, settings: DEFAULT_SETTINGS, now: NOW, stillWanted: () => false });
+    expect(none).toMatchObject({ stopped: true, changed: [], unwritten: [] });
+    expect(reads).toEqual([]);
+    expect((await runSync(await job(folderFs()))).stopped).toBe(false);
+  });
+});
+
 describe("test connection", () => {
   it("counts the activity types of the last 90 days", async () => {
     const sources = fakeSources();

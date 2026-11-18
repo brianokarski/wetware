@@ -10,6 +10,7 @@ const report = (fields: Partial<SyncReport> = {}): SyncReport => ({
   weather: { status: "synced" },
   withheld: 0,
   unwritten: [],
+  stopped: false,
   ...fields,
 });
 
@@ -101,21 +102,23 @@ describe("the line a sync leaves", () => {
 });
 
 describe("the last-synced time", () => {
-  const now = new Date(2026, 10, 17, 9, 41);
+  const today = "2026-11-17";
 
   it("is the time of day when it was today", () => {
-    expect(lastSyncedLabel(new Date(2026, 10, 17, 6, 27, 59), now)).toBe("Last synced 06:27");
-    expect(lastSyncedLabel(new Date(2026, 10, 17, 0, 5), now)).toBe("Last synced 00:05");
-    expect(lastSyncedLabel(new Date(2026, 10, 17, 9, 41), now)).toBe("Last synced 09:41");
+    expect(lastSyncedLabel(new Date(2026, 10, 17, 6, 27, 59), today)).toBe("Last synced 06:27");
+    expect(lastSyncedLabel(new Date(2026, 10, 17, 0, 5), today)).toBe("Last synced 00:05");
+    expect(lastSyncedLabel(new Date(2026, 10, 17, 23, 59), today)).toBe("Last synced 23:59");
   });
 
   it("has the day in front when it was another day", () => {
-    expect(lastSyncedLabel(new Date(2026, 10, 16, 21, 5), now)).toBe("Last synced November 16, 21:05");
-    expect(lastSyncedLabel(new Date(2025, 11, 31, 23, 59), now)).toBe("Last synced December 31, 23:59");
+    expect(lastSyncedLabel(new Date(2026, 10, 16, 21, 5), today)).toBe("Last synced Nov 16, 21:05");
+    expect(lastSyncedLabel(new Date(2025, 11, 31, 23, 59), today)).toBe("Last synced Dec 31, 23:59");
+    // Left open past midnight: the sync of a moment ago was yesterday.
+    expect(lastSyncedLabel(new Date(2026, 10, 17, 23, 59), "2026-11-18")).toBe("Last synced Nov 17, 23:59");
   });
 
   it("says so when there hasn't been one", () => {
-    expect(lastSyncedLabel(null, now)).toBe("Not synced yet");
+    expect(lastSyncedLabel(null, today)).toBe("Not synced yet");
   });
 
   it("is only remembered for a sync that reached a source", () => {

@@ -123,6 +123,11 @@ export function monthAndDay(key: string): string {
   return localDate(key).toLocaleDateString(LOCALE, { month: "long", day: "numeric" });
 }
 
+/** "Nov 17" */
+export function shortDate(key: string): string {
+  return localDate(key).toLocaleDateString(LOCALE, { month: "short", day: "numeric" });
+}
+
 /** "Tuesday, November 17, 2026" */
 export function longDate(key: string): string {
   return localDate(key).toLocaleDateString(LOCALE, {

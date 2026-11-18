@@ -39,6 +39,8 @@ export interface SyncReport {
   withheld: number;
   /** Days that had something to write and whose file couldn't take it. */
   unwritten: { date: string; reason: string }[];
+  /** The sync was called off part-way (`SyncJob.stillWanted`): the days after the last one changed were not looked at. */
+  stopped: boolean;
 }
 
 /** How far back the activity types are counted for "Test connection". */
@@ -95,6 +97,12 @@ export interface SyncJob {
   settings: Settings;
   /** The moment the sync runs: it decides what "today" is and what `_synced_at` says. */
   now: Date;
+  /**
+   * Asked before each day file is touched. Once it says no, nothing more is
+   * read or written: the data folder is being changed under the sync, and
+   * what it fetched belongs to the folder it started on.
+   */
+  stillWanted?: () => boolean;
 }
 
 /**
@@ -102,7 +110,7 @@ export interface SyncJob {
  * set up without holding back the other. Never rejects for anything a source
  * or a day file does; the report says what happened.
  */
-export async function runSync({ fs, sources, habits, settings, now }: SyncJob): Promise<SyncReport> {
+export async function runSync({ fs, sources, habits, settings, now, stillWanted }: SyncJob): Promise<SyncReport> {
   const range = syncRange(dateKey(now));
   const syncedAt = localTimestamp(now);
   const [intervals, weather] = await Promise.all([
@@ -112,7 +120,12 @@ export async function runSync({ fs, sources, habits, settings, now }: SyncJob): 
 
   const changed: string[] = [];
   const unwritten: SyncReport["unwritten"] = [];
+  let stopped = false;
   for (const [date, wants] of mergeWants(intervals.wants, weather.wants)) {
+    if (stillWanted && !stillWanted()) {
+      stopped = true;
+      break;
+    }
     let wrote = false;
     try {
       // The patch is worked out against the file as it is when its turn comes, so an edit made meanwhile is seen.
@@ -126,7 +139,12 @@ export async function runSync({ fs, sources, habits, settings, now }: SyncJob): 
       unwritten.push({ date, reason: reason(e) });
     }
   }
-  return { range, syncedAt, changed, intervals: intervals.outcome, weather: weather.outcome, withheld: intervals.withheld, unwritten };
+  return {
+    range, syncedAt, changed, unwritten, stopped,
+    intervals: intervals.outcome,
+    weather: weather.outcome,
+    withheld: intervals.withheld,
+  };
 }
 
 /**
