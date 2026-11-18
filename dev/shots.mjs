@@ -312,7 +312,7 @@ async function checkDrawing(t) {
 }
 
 /** Checks that the focused cell or day header shows a focus ring, in the pixels and not only in the styles. */
-async function checkFocusRing(t, label) {
+async function checkFocusRing(t, label, { outside = false } = {}) {
   const focused = await t.page.evaluate(() => {
     const el = document.activeElement;
     const style = getComputedStyle(el);
@@ -323,8 +323,9 @@ async function checkFocusRing(t, label) {
   assert.ok(focused.width >= 2, `${label}: the focus outline is ${focused.width}px`);
   await t.page.mouse.move(2, 2);
   const px = await pixels(t.page);
-  // The ring is drawn just inside the edges: dark on all four sides.
-  const sides = [[focused.left + 1, focused.cy], [focused.right - 1, focused.cy], [focused.cx, focused.top + 1], [focused.cx, focused.bottom - 1]];
+  // The ring is drawn just inside the edges of a grid cell, and just outside a control that stands alone: dark on all four sides.
+  const by = outside ? -3 : 1;
+  const sides = [[focused.left + by, focused.cy], [focused.right - by, focused.cy], [focused.cx, focused.top + by], [focused.cx, focused.bottom - by]];
   for (const [x, y] of sides) assert.ok(px.darkest(x, y) < INK, `${label}: the focus ring is not drawn at ${Math.round(x)}, ${Math.round(y)}`);
 }
 
@@ -1255,6 +1256,23 @@ const scenarios = [
       await t.stateIs("run", 17, "done");
       assert.equal(await t.syncStatus(), "Last synced 09:41");
       assert.equal(await t.problem(), "Sync: 24 days updated.");
+
+      // What the screens say of syncing is about the folder now open. Another folder, whose own sync reaches
+      // nothing, has not been synced, and has no Strava activities to speak of.
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="intervals.icu API key"]');
+      assert.equal(await t.row("Strava"), "2 activities can't be read");
+      await t.page.evaluate(() => {
+        window.wetware.pick("same");
+        window.wetware.failIntervals({ kind: "offline" });
+        window.wetware.failWeather({ kind: "offline" });
+      });
+      await t.page.click(".row-value .action");
+      await t.told("could not be reached");
+      assert.equal(await t.row("Strava"), null);
+      await t.nav("Month");
+      await t.ready();
+      assert.equal(await t.syncStatus(), "Not synced yet");
     },
   },
   {
@@ -1461,7 +1479,9 @@ const scenarios = [
         "High: 62 °F | open-meteo", "Low: 50 °F | open-meteo", "Conditions: fog | open-meteo",
       ]);
       // The keys the user added by hand are there to see.
-      assert.deepEqual(await t.dayTable("Other properties"), ["caffeine_mg: 180", "obsidian_alias: Tuesday: long one"]);
+      assert.deepEqual(await t.dayTable("Other properties"), [
+        "caffeine_mg: 180", "obsidian_alias: Tuesday: long one", "_synced_at: 2026-11-11T06:20:00-08:00",
+      ]);
       assert.equal(await t.page.$eval(".day-notes", (el) => el.value), "Slept badly. Two coffees before ten.\n");
       assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
 
@@ -1525,6 +1545,11 @@ const scenarios = [
       assert.equal(await t.dayTable("Also logged"), null);
       assert.equal(await t.dayTable("Other properties"), null);
       assert.equal(await t.page.$eval(".day-notes", (el) => el.value), "");
+      // Lift and Climb as seeded name no activity types, so sync has no part in them: ticking one by hand
+      // offers nothing to hand back. A day before the range a sync covers offers nothing either.
+      await t.page.click(t.dayBox("lift"));
+      await t.saved();
+      assert.deepEqual(await t.dayRow("lift"), { value: true, mark: "mark-x", source: "manual", action: null, note: null, state: "done" });
       // Back from there: the grid opens with the keyboard on the 9th.
       await t.page.keyboard.press("Escape");
       await t.ready();
@@ -1539,8 +1564,40 @@ const scenarios = [
       await t.ready();
       assert.equal(await t.text("h1"), "October");
       assert.equal(await t.focused(), "day 2026-10-30");
-      assert.deepEqual(await t.folder(), before);
-      assert.equal(await t.writes(), 0);
+
+      // A day outside what a sync covers (it starts at October 25): a synced habit set by hand has nothing to hand back to.
+      await t.openDay(20);
+      await t.dayType("sleep", "6.5");
+      await t.saved();
+      assert.deepEqual(await t.dayRow("sleep"), { value: "6.5", mark: null, source: "manual", action: null, note: null, state: "done" });
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+
+      // Coming back from a day is where the grid opens once. After that it opens where it always does:
+      // another month and then another screen and back is this month, not the one the day was in.
+      assert.equal(await t.focused(), "day 2026-10-20");
+      await t.page.click(".month-nav button:last-child");
+      await t.ready();
+      assert.equal(await t.text("h1"), "November");
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="Latitude"]');
+      await t.nav("Month");
+      await t.ready();
+      assert.equal(await t.text("h1"), "November");
+      assert.doesNotMatch(await t.focused(), /^day /);
+      // And straight to another screen and back, without changing month first.
+      await t.openDay(3);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "day 2026-11-03");
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="Latitude"]');
+      await t.nav("Month");
+      await t.ready();
+      assert.doesNotMatch(await t.focused(), /^day /);
+      await t.page.keyboard.press("Tab");
+      for (let i = 0; i < 4; i++) await t.page.keyboard.press("Tab");
+      assert.equal(await t.focused(), "weight 2026-11-17");
     },
   },
   {
@@ -1733,6 +1790,25 @@ const scenarios = [
       await t.ready();
       assert.equal(await t.file("days/2026-11-06.md"), "---\n# kept by hand\nmood:   3\ncaffeine_mg: 90\n---\nOld note.\nNew note.");
 
+      // A file that is only text, and notes typed above it that would read as frontmatter: they stay notes.
+      // The file is given a frontmatter of its own first, and no habit is ticked by what was typed.
+      await t.page.evaluate(() => window.wetware.write("days/2026-11-02.md", "Plain note made in Obsidian.\n"));
+      await t.reload();
+      await t.openDay(2);
+      assert.equal(await notes(), "Plain note made in Obsidian.\n");
+      await t.page.$eval(".day-notes", (el) => (el.focus(), el.setSelectionRange(0, 0)));
+      await t.page.keyboard.type("---\nrun: true\nmood: 5\n---\n");
+      await t.page.waitForFunction(() => window.wetware.read("days/2026-11-02.md").includes("mood: 5"));
+      await t.saved();
+      assert.equal(await t.file("days/2026-11-02.md"), "---\ndate: 2026-11-02\n---\n---\nrun: true\nmood: 5\n---\nPlain note made in Obsidian.\n");
+      assert.equal(await t.count(".day-notes"), 1, "the day stopped being editable");
+      assert.equal(await notes(), "---\nrun: true\nmood: 5\n---\nPlain note made in Obsidian.\n");
+      assert.equal((await t.dayRow("run")).value, false);
+      assert.equal((await t.dayRow("mood")).value, "");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.count(".grid-flag"), 0);
+
       // Notes that can't be saved: said, kept in the field, and saved by the next try.
       await t.openDay(16);
       await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
@@ -1744,8 +1820,278 @@ const scenarios = [
       await t.page.keyboard.type(" Felt good.");
       await t.page.waitForFunction(() => window.wetware.read("days/2026-11-16.md").endsWith("\nLong run. Felt good."));
       assert.equal(await t.problem(), null);
+      // And if there is no next keystroke, leaving the day tries again.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" Twice.");
+      await t.told("The notes for November 16 were not saved.");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.ok((await t.file("days/2026-11-16.md")).endsWith("Long run. Felt good. Twice."), "the notes were not saved on leaving");
+      assert.equal(await t.problem(), null);
+
+      // Typing that never pauses is not put off for ever: a key every 150 ms for four seconds, and some of it is
+      // on disk before the typing stops.
+      await t.openDay(16);
+      await t.notesEnd();
+      const saves = await t.writes();
+      await t.page.keyboard.type(" abcdefghijklmnopqrstuvwxyz", { delay: 150 });
+      assert.equal(await t.writes(), saves + 1, "nothing was saved while the typing went on");
+      assert.match(await t.file("days/2026-11-16.md"), /Twice\. [a-z]{10,25}$/);
+      // The window going to the back saves the rest at once. So does hiding it, and asking it to close.
+      const tail = async (text) => (await t.file("days/2026-11-16.md")).endsWith(text);
+      await t.windowEvent("blur");
+      await t.saved();
+      assert.ok(await tail("uvwxyz"), "not saved when the window lost focus");
+      await t.page.keyboard.type("1");
+      await t.windowEvent("pagehide");
+      await t.saved();
+      assert.ok(await tail("xyz1"), "not saved when the page was hidden away");
+      await t.page.keyboard.type("2");
+      await t.windowEvent("beforeunload");
+      await t.saved();
+      assert.ok(await tail("xyz12"), "not saved when the window was asked to close");
+      await t.page.keyboard.type("3");
+      await t.page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+        delete document.visibilityState;
+      });
+      await t.saved();
+      assert.ok(await tail("xyz123"), "not saved when the window was hidden");
     },
   },
+  {
+    name: "day-outside",
+    about: "a day file changed in another app while open: taken in when nothing is typed here, asked about when something is, never written over unseen",
+    async run(t) {
+      const path = "days/2026-11-10.md";
+      const original = await t.file(path);
+      const outside = (text) => t.page.evaluate((p, body) => window.wetware.write(p, body), path, text);
+      const reads = () => t.page.evaluate(() => window.wetware.calls().filter((call) => call === "data_read").length);
+      /** The app comes back to the front, reads the open day again, and has taken in what it read. */
+      const front = async () => {
+        const before = await reads();
+        await t.windowEvent("focus");
+        await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_read").length > n, {}, before);
+        await t.saved();
+      };
+      const question = () => t.dayTable("Notes");
+      const ASKED = "The notes for November 10 were changed outside Wetware while they were open here. What is typed here has not been saved. Beside the notes, choose whether to keep it or take the file's text.";
+      const HELD = "The notes for November 10 are not saved: they were changed outside Wetware. Before leaving this day, choose beside the notes whether to keep what is typed here or take the file's text.";
+
+      // Changed outside with nothing typed here: the field takes the new text, and nothing is said or written.
+      await t.openDay(10);
+      const second = `${original}Second line from Obsidian.\n`;
+      await outside(second);
+      await front();
+      assert.equal(await t.notes(), "Slept badly. Two coffees before ten.\nSecond line from Obsidian.\n");
+      assert.equal(await t.problem(), null);
+      assert.deepEqual(await question(), []);
+      assert.equal(await t.writes(), 0);
+
+      // Changed outside in the frontmatter only: the values follow, a new key is listed, and there is nothing to ask.
+      const values = second.replace("mood: 2\n", "mood: 5\nadded_outside: yes\n");
+      await outside(values);
+      await front();
+      assert.equal((await t.dayRow("mood")).value, "5");
+      assert.ok((await t.dayTable("Other properties")).includes("added_outside: yes"));
+      assert.deepEqual(await question(), []);
+      // Notes typed after that are saved as usual, under the frontmatter as the other app left it.
+      await t.notesEnd();
+      await t.page.keyboard.type("Typed in Wetware.\n");
+      await t.page.waitForFunction((p, text) => window.wetware.read(p) !== text, {}, path, values);
+      const third = `${values}Typed in Wetware.\n`;
+      assert.equal(await t.file(path), third);
+      assert.equal(await t.problem(), null);
+      // The same with the frontmatter changed and not yet seen: a value set here lands beside it, key by key.
+      await outside(third.replace("mood: 5\n", "mood: 1\n"));
+      await t.page.click(t.dayBox("travel"));
+      await t.saved();
+      assert.equal(await t.file(path), third.replace("mood: 5\n", "mood: 1\n").replace("_sources:\n", "tags: [travel]\n_sources:\n"));
+      assert.equal((await t.dayRow("mood")).value, "1");
+      assert.deepEqual(await question(), []);
+
+      // Changed outside and not yet seen, and then typed over here: nothing is written, the typing stays, and the app asks.
+      const fourth = `${await t.file(path)}Fourth line, from Obsidian.\n`;
+      await outside(fourth);
+      const written = await t.writes();
+      await t.notesEnd();
+      await t.page.keyboard.type("Typed after.");
+      await t.told("were changed outside Wetware");
+      assert.equal(await t.problem(), ASKED);
+      assert.equal(await t.file(path), fourth);
+      assert.ok((await t.notes()).endsWith("Typed in Wetware.\nTyped after."));
+      assert.deepEqual(await question(), [
+        "Changed outside: Keep what is typed here | Take the file's text | The file's notes were changed while these were open. Nothing is saved until one is chosen. Keeping writes this text over the file's; taking puts the file's text here in its place.",
+      ]);
+      await t.shot();
+      // Typing on, leaving the field, the window going to the back: still nothing is written.
+      await t.page.keyboard.type(" And more.");
+      await t.windowEvent("blur");
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1100)));
+      assert.equal(await t.file(path), fourth);
+      assert.equal(await t.writes(), written);
+
+      // The day can't be left while that stands, by any road, and each try says why.
+      await t.page.click(".notice-dismiss");
+      await t.page.keyboard.press("Escape");
+      assert.equal(await t.text(".day h1"), "November 10");
+      assert.equal(await t.problem(), HELD);
+      assert.equal(await t.focusedLabel(), "Keep what is typed here");
+      for (const way of [".day .month-nav button:nth-child(2)", ".day .month-nav button:first-child", ".day .month-nav button:nth-child(3)"]) {
+        await t.page.click(".notice-dismiss");
+        await t.page.click(way);
+        assert.equal(await t.text(".day h1"), "November 10");
+        assert.equal(await t.problem(), HELD);
+      }
+      await t.nav("Settings");
+      assert.equal(await t.count(".day"), 1);
+      assert.equal(await t.text(".day h1"), "November 10");
+      assert.ok((await t.notes()).endsWith("Typed after. And more."));
+
+      // "Take the file's text", from the keyboard: the field holds what the file holds, and nothing was written.
+      await t.page.focus('.day .table[aria-label="Notes"] .action');
+      await t.page.keyboard.press("Tab");
+      assert.equal(await t.focusedLabel(), "Take the file's text");
+      await t.page.keyboard.press("Enter");
+      assert.equal(await t.notes(), "Slept badly. Two coffees before ten.\nSecond line from Obsidian.\nTyped in Wetware.\nFourth line, from Obsidian.\n");
+      assert.equal(await t.problem(), null);
+      assert.deepEqual(await question(), []);
+      assert.equal(await t.file(path), fourth);
+      assert.equal(await t.writes(), written);
+      // And now the day can be left.
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "day 2026-11-10");
+      assert.equal(await t.file(path), fourth);
+
+      // The other choice. Asked the same way, "Keep what is typed here" writes it over the file's text.
+      await t.openDay(10);
+      const fifth = `${fourth}Fifth line, from Obsidian.\n`;
+      await outside(fifth);
+      await t.notesEnd();
+      await t.page.keyboard.type("Mine.");
+      await t.told("were changed outside Wetware");
+      assert.equal(await t.file(path), fifth);
+      await t.page.click('.day .table[aria-label="Notes"] .action');
+      await t.page.waitForFunction((p, text) => window.wetware.read(p) !== text, {}, path, fifth);
+      assert.equal(await t.file(path), `${fourth}Mine.`);
+      assert.equal(await t.problem(), null);
+      assert.deepEqual(await question(), []);
+      // From there on it saves as usual.
+      await t.notesEnd();
+      await t.page.keyboard.type(" And more.");
+      await t.page.waitForFunction((p) => window.wetware.read(p).endsWith("Mine. And more."), {}, path);
+
+      // Seen on coming back to the window, with typing here not yet saved: asked at once, before any save is tried.
+      const sixth = `${await t.file(path)}\nSixth, from Obsidian.\n`;
+      await t.page.keyboard.type(" Unsaved.");
+      await outside(sixth);
+      await front();
+      assert.equal(await t.problem(), ASKED);
+      assert.equal((await question()).length, 1);
+      assert.equal(await t.file(path), sixth);
+      assert.ok((await t.notes()).endsWith("Mine. And more. Unsaved."), "the file's text replaced what was typed");
+      // If the file goes back to what it was, there is nothing left to ask, and the typing is saved.
+      await outside(sixth.replace("\nSixth, from Obsidian.\n", ""));
+      await front();
+      assert.deepEqual(await question(), []);
+      await t.page.waitForFunction((p) => window.wetware.read(p).endsWith("Mine. And more. Unsaved."), {}, path);
+      assert.equal(await t.problem(), null);
+
+      // A value set while the day is being read again is not undone by that reading, even for a moment.
+      await t.page.evaluate((p) => {
+        window.wetware.slowRead(p, 300);
+        window.wetware.slowWrite(p, 900);
+      }, path);
+      assert.equal((await t.dayRow("meditate")).value, true);
+      await t.windowEvent("focus");
+      await t.page.click(t.dayBox("meditate"));
+      assert.equal((await t.dayRow("meditate")).value, false);
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+      assert.match(await t.file(path), /^meditate: true$/m, "the edit had already reached the disk");
+      assert.equal((await t.dayRow("meditate")).value, false, "the reading put back what was on disk before the edit");
+      await t.page.waitForFunction((p) => /^meditate: false$/m.test(window.wetware.read(p)), {}, path);
+      await t.saved();
+      assert.equal((await t.dayRow("meditate")).value, false);
+    },
+  },
+  ...[["day-odd", WIDE], ["day-odd-960", SMALL]].map(([name, size]) => ({
+    name,
+    size,
+    about: "a day file with values its habits can't hold, bookkeeping out of place and a long value: all of it shown, none of it changed unasked",
+    async run(t) {
+      const path = "days/2026-11-12.md";
+      const url = `https://example.com/${"a-long-path-with-no-spaces/".repeat(4)}end`;
+      const odd = [
+        "---", "date: 2026-11-13", "weight_lb: 182 lb", 'run: "yes"', "sleep_h: 7.1", "mood: [1, 2]", "hrv: null", "sleep_score: {a: 1}",
+        "resting_hr: 47", `url: ${url}`, "tags: [travel, {a: 1}, sick]", "_sources:", "  sleep_h: intervals", "  url: manual", "  run: 5",
+        "_synced_at: 2026-11-13T06:00:00-08:00", "---", "", "Notes.", "",
+      ].join("\n");
+      assert.ok(url.length >= 120);
+      await t.page.evaluate((p, text) => window.wetware.write(p, text), path, odd);
+      await t.reload();
+      await t.openDay(12);
+      const raw = (habit) => t.page.$eval(`.day .row[data-habit="${habit}"]`, (row) => row.querySelector(".day-raw")?.textContent ?? null);
+
+      // A habit's key holding what the habit can't: the row shows it as written and says it can't be read.
+      assert.equal(await raw("weight"), "182 lb");
+      const weight = await t.dayRow("weight");
+      assert.equal(`${weight.value}|${weight.source}`, "|not readable");
+      assert.equal(weight.note, "The file has this under weight_lb, and it is not a number. It stays as it is until a value is entered here.");
+      assert.equal(await raw("run"), "yes");
+      const run = await t.dayRow("run");
+      // It also keeps sync off the run, as any value with no source on record does, so it can be handed back.
+      assert.equal(`${run.value}|${run.source}|${run.action}`, "false|not readable|Use synced value");
+      assert.match(run.note, /^The file has this under run, and it is not true or false\./);
+      assert.equal(await raw("mood"), "[1, 2]");
+      assert.equal(await raw("sleep"), null);
+      assert.equal(await t.page.$eval(t.dayInput("weight"), (el) => el.getAttribute("aria-label")), "Weight, Thursday, November 12, 2026: not readable, the file has 182 lb");
+
+      // What was logged is shown as the file has it, whatever its shape. What holds nothing is listed with the rest.
+      assert.deepEqual(await t.dayTable("Also logged"), ["Resting heart rate: 47 bpm | unrecorded", 'Sleep score: {"a":1} | unrecorded']);
+      assert.deepEqual(await t.dayTable("Other properties"), [
+        "date: 2026-11-13", "hrv: null", `url: ${url}`, 'tags: [{"a":1}, sick]', "_sources.url: manual", "_sources.run: 5",
+        "_synced_at: 2026-11-13T06:00:00-08:00",
+      ]);
+      assert.equal((await t.dayRow("travel")).value, true);
+
+      // The long value breaks inside its table: nothing runs under the notes or off the page.
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      const fit = await t.page.evaluate(() => {
+        const table = document.querySelector('.day .table[aria-label="Other properties"]').getBoundingClientRect();
+        const notes = document.querySelector(".day-notes").getBoundingClientRect();
+        const cells = [...document.querySelectorAll('.day .table[aria-label="Other properties"] .row > div')].map((el) => el.getBoundingClientRect());
+        return { over: cells.filter((cell) => cell.right > table.right + 0.5).length, gap: notes.left - table.right, lines: Math.max(...cells.map((cell) => cell.height)) };
+      });
+      assert.equal(fit.over, 0, "a value runs out of its table");
+      assert.ok(fit.gap > 0, "the properties run under the notes");
+      assert.ok(fit.lines > 30, "the long value is still on one line");
+      await t.shot();
+
+      // Going through every field without typing changes nothing.
+      const written = await t.writes();
+      await t.page.focus(t.dayInput("weight"));
+      for (let i = 0; i < 14; i++) await t.page.keyboard.press("Tab");
+      await t.saved();
+      assert.equal(await t.file(path), odd);
+      assert.equal(await t.writes(), written);
+
+      // A value entered, or a box set, takes the place of what couldn't be read. Nothing else in the file moves.
+      await t.dayType("weight", "181.5");
+      await t.page.click(t.dayBox("run"));
+      await t.saved();
+      assert.deepEqual(changed(odd, await t.file(path)), {
+        added: ["weight_lb: 181.5", "run: true", "  run: manual", "  weight_lb: manual"],
+        removed: ["weight_lb: 182 lb", 'run: "yes"', "  run: 5"],
+      });
+      assert.equal(await raw("weight"), null);
+      assert.equal((await t.dayRow("weight")).source, "manual");
+      assert.equal(await raw("run"), null);
+      assert.equal(await raw("mood"), "[1, 2]");
+    },
+  })),
   {
     name: "day-synced",
     about: "a synced value changed by hand is manual, and can be handed back for the next sync to fill",
@@ -1773,7 +2119,7 @@ const scenarios = [
       });
       const sleep = await t.dayRow("sleep");
       assert.equal(`${sleep.value} ${sleep.source} ${sleep.action}`, "5 manual Use synced value");
-      assert.equal(sleep.note, "Set by hand, so sync leaves it alone. Use synced value clears it, and the next sync fills it in again from intervals.icu.");
+      assert.equal(sleep.note, "Set by hand, so sync leaves it alone. Use synced value clears it. The next sync then fills in what intervals.icu has for this day, and leaves it empty if it has nothing.");
       assert.equal((await t.dayRow("run")).action, "Use synced value");
       await t.shot();
 
@@ -1798,13 +2144,47 @@ const scenarios = [
       await t.page.click(".month .action");
       await t.openDay(17);
       assert.equal((await t.dayRow("sleep")).value, "");
+      // Except in a field that is being typed in: the sync lands under it, and what is typed stays what is shown.
+      await t.page.click(t.dayInput("sleep"));
+      await t.page.keyboard.type("6");
       await t.told("Sync: 1 day updated.");
+      await t.page.waitForFunction((selector) => document.querySelector(selector).getAttribute("aria-pressed") === "true", {}, t.dayBox("run"));
+      assert.match(await t.file(TODAY_FILE), /^sleep_h: 7\.7$/m);
+      assert.equal(await t.page.$eval(t.dayInput("sleep"), (el) => el.value), "6");
+      // Taken back with Escape, the field shows what the sync wrote, and the day is still open.
+      await t.page.keyboard.press("Escape");
+      assert.equal(await t.text(".day h1"), "November 17");
       await t.page.waitForFunction((selector) => document.querySelector(selector).value === "7.7", {}, t.dayInput("sleep"));
       const sleepAgain = await t.dayRow("sleep");
       assert.equal(`${sleepAgain.value} ${sleepAgain.source} ${sleepAgain.action}`, "7.7 intervals null");
       const runAgain = await t.dayRow("run");
       assert.equal(`${runAgain.value} ${runAgain.source} ${runAgain.action}`, "true intervals null");
       assert.deepEqual(changed(synced, await t.file(TODAY_FILE)), { added: [], removed: [] });
+
+      // The same when the file changes under a half-typed value some other way, and the typing is then finished:
+      // what was typed is what is entered, not a mix of the two.
+      await t.page.$eval(t.dayInput("sleep"), (el) => (el.focus(), el.select()));
+      await t.page.keyboard.type("6");
+      await t.page.evaluate(() => window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("sleep_h: 7.7", "sleep_h: 8.1")));
+      await t.windowEvent("focus");
+      await t.page.waitForFunction(() => window.wetware.calls().at(-1) === "data_read");
+      await t.saved();
+      assert.equal(await t.page.$eval(t.dayInput("sleep"), (el) => el.value), "6");
+      await t.page.keyboard.type(".5");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      assert.match(await t.file(TODAY_FILE), /^sleep_h: 6\.5$/m);
+      assert.match(await t.file(TODAY_FILE), /^  sleep_h: manual$/m);
+      assert.equal(await t.page.$eval(t.dayInput("sleep"), (el) => el.value), "6.5");
+      assert.equal(await t.problem(), "Sync: 1 day updated.");
+
+      // A value whose source is something this app doesn't know holds sync back like one set by hand, and says so.
+      await t.page.evaluate(() => window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("  sleep_h: manual", "  sleep_h: garmin")));
+      await t.windowEvent("focus");
+      await t.page.waitForFunction((selector) => document.querySelector(selector).textContent === "garmin", {}, '.day .row[data-habit="sleep"] .day-source');
+      const garmin = await t.dayRow("sleep");
+      assert.equal(garmin.action, "Use synced value");
+      assert.match(garmin.note, /^Marked as coming from garmin, so sync leaves it alone\./);
     },
   },
   {
@@ -1866,11 +2246,30 @@ const scenarios = [
       await key("Enter");
       await t.page.waitForSelector(".day .table");
       assert.equal(await t.text(".day h1"), "November 16");
-      assert.equal(await focusedLabel(), "Monday, November 16, 2026");
+      // The keyboard is on the way back, and can be seen there.
+      assert.equal(await focusedLabel(), "Month");
+      await checkFocusRing(t, "Month, when a day opens", { outside: true });
 
-      // Tab reaches the day's nav and then each value in turn. A number is typed and saved with Enter.
-      await key("Tab");
-      assert.equal(await focusedLabel(), "Previous day, Sunday, November 15, 2026");
+      // The day before, and the one before that: two presses, since the keyboard stays on the control that was used.
+      await t.tabTo("Previous day, Sunday, November 15, 2026", true);
+      await key("Enter");
+      await t.page.waitForFunction(() => document.querySelector(".day h1").textContent === "November 15");
+      assert.equal(await focusedLabel(), "Previous day, Saturday, November 14, 2026");
+      await checkFocusRing(t, "Previous day, after it was used", { outside: true });
+      await key("Enter");
+      await t.page.waitForFunction(() => document.querySelector(".day h1").textContent === "November 14");
+      assert.equal(await focusedLabel(), "Previous day, Friday, November 13, 2026");
+      // And forward again the same way.
+      await t.tabTo("Next day, Sunday, November 15, 2026");
+      await key("Enter");
+      await t.page.waitForFunction(() => document.querySelector(".day h1").textContent === "November 15");
+      assert.equal(await focusedLabel(), "Next day, Monday, November 16, 2026");
+      await key("Enter");
+      await t.page.waitForFunction(() => document.querySelector(".day h1").textContent === "November 16");
+      await t.page.waitForSelector(".day .table");
+      assert.equal(await focusedLabel(), "Next day, Tuesday, November 17, 2026");
+
+      // Tab goes on to each value in turn. A number is typed and saved with Enter.
       await t.tabTo("Weight, Monday, November 16, 2026");
       await t.page.keyboard.type("170.1");
       await key("Enter");
@@ -1891,6 +2290,9 @@ const scenarios = [
       await t.page.waitForFunction(() => document.querySelector(".day h1").textContent === "November 17");
       await t.page.waitForSelector(".day .table");
       await t.saved();
+      // On the last day there is, the keyboard is still on "next", which now goes nowhere.
+      assert.equal(await focusedLabel(), "Next day, Wednesday, November 18, 2026");
+      assert.equal(await t.page.evaluate(() => document.activeElement.getAttribute("aria-disabled")), "true");
       const sixteenth = await t.file("days/2026-11-16.md");
       assert.match(sixteenth, /^weight_lb: 170\.1$/m);
       assert.match(sixteenth, /^run: false$/m);
@@ -2058,6 +2460,12 @@ function tools(page, name, base) {
       }
       throw new Error(`Tab never reached "${name}"`);
     },
+    /** Fires an event on the window, as the system does when the app comes to the front, goes to the back or is closed. */
+    windowEvent: (name) => page.evaluate((type) => void window.dispatchEvent(new Event(type)), name),
+    notes: () => page.$eval(".day-notes", (el) => el.value),
+    /** Puts the caret at the end of the notes, ready to type. */
+    notesEnd: () => page.$eval(".day-notes", (el) => (el.focus(), el.setSelectionRange(el.value.length, el.value.length))),
+    focusedLabel: () => page.evaluate(() => document.activeElement.getAttribute("aria-label") ?? document.activeElement.textContent),
     /** Everything in the open folder, to check that nothing changed. */
     folder: () => page.evaluate(() => window.wetware.paths().map((path) => [path, window.wetware.read(path)])),
     writes: () => page.evaluate(() => window.wetware.calls().filter((call) => call === "data_write").length),

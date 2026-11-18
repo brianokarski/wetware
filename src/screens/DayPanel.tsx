@@ -268,7 +268,8 @@ function HabitRow(props: {
             aria-label={`${label}: ${odd === null ? describeCell(habit, cell) || "empty" : `not readable, the file has ${odd}`}`}
             onClick={() => props.onSet(cell.value === null)}
           >
-            <BoxMark habit={habit} cell={cell} />
+            {/* A value that can't be read is shown beside the box, as written. The box itself says nothing of it. */}
+            {odd === null && <BoxMark habit={habit} cell={cell} />}
           </button>
         ) : (
           <ValueField
@@ -281,7 +282,7 @@ function HabitRow(props: {
                 props.onRejected(text);
                 return false;
               }
-              // A value the file holds in a form that can't be read is replaced by whatever is entered, empty included.
+              // A value the file holds in a form that can't be read is replaced by whatever is entered.
               if (parsed.value !== cell.value || odd !== null) props.onSet(parsed.value);
               return true;
             }}
@@ -456,10 +457,13 @@ function Notes(props: {
     const { text, theirs } = latest.current;
     // The ones the typing started from, or this field's own save arriving by another road: nothing new.
     if (props.notes === from.current || props.notes === saving.current) {
-      // And if they are back to what the typing started from, there is no longer anything to ask.
+      // And if they are back to what the typing started from, there is no longer anything to ask,
+      // and what is typed can be saved after all.
       if (theirs !== null && props.notes === from.current) {
+        latest.current.theirs = null;
         setTheirs(null);
         props.settle();
+        saver.now();
       }
       return;
     }
