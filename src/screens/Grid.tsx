@@ -100,17 +100,14 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, notify, settle, syn
     loadMonth(fs, month).then(
       (loaded) => {
         if (stale) return;
-        // Two kinds of day keep what they show, since what was just read may be older than it:
-        // one with an edit still on its way to disk, whose own result follows, and one edited
-        // since this reading began, whose result is already on screen.
-        const pending = (date: string) => (inFlight.current.get(date) ?? 0) > 0;
+        // A day edited since this reading began keeps what it shows: what was read of it may be older
+        // than the edit, whose own result is on screen or on its way. An edit made before the reading
+        // began needs no such care: the month is not read until every write asked for has landed.
         const editedSince = (date: string) => (edits.current.at.get(date) ?? 0) > began;
         setDays((shown) =>
           fresh || !shown
             ? loaded
-            : Object.fromEntries(
-                Object.entries(loaded).map(([date, day]) => [date, pending(date) || editedSince(date) ? (shown[date] ?? day) : day]),
-              ),
+            : Object.fromEntries(Object.entries(loaded).map(([date, day]) => [date, editedSince(date) ? (shown[date] ?? day) : day])),
         );
         // The month is here, and so is every day in it that could be read.
         const readable = Object.values(loaded).filter((day) => !day.error);

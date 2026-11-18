@@ -1259,7 +1259,7 @@ const scenarios = [
   },
   {
     name: "sync-reread",
-    about: "an edit made while the month is read again after a sync stays on screen, and so does one still on its way to disk",
+    about: "an edit made while the month is read again after a sync stays on screen, and the month is not read over an edit still on its way to disk",
     query: "sync=fixture&key=stored",
     async run(t) {
       await t.told("Sync: 24 days updated.");
@@ -1292,7 +1292,7 @@ const scenarios = [
       assert.equal(await t.state("run", 17), "done");
       await t.page.evaluate(() => window.wetware.slowRead("days/2026-11-20.md", null));
 
-      // An edit still on its way to disk when the re-read lands. October: the days before the 25th are outside
+      // An edit still on its way to disk when a sync finishes. October: the days before the 25th are outside
       // what sync looks at, so the edit's file is not one the sync waits its turn for.
       await t.page.click(".month-nav button:first-child");
       await t.ready();
@@ -1308,15 +1308,16 @@ const scenarios = [
       await t.click("meditate", 10);
       assert.equal(await t.state("meditate", 10), "done");
       await t.told("Sync: 1 day updated.");
-      await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_list").length > n, {}, listed);
-      await t.saved();
-      // The month has been read again, without the file the edit hasn't made yet. The tick is still there.
+      // The sync is done and the edit is not yet on disk. The tick stays, and the month is not read again
+      // until it is: a month read now would not have the file the edit is making.
       assert.equal(await t.file("days/2026-10-10.md"), null, "the edit had already reached the disk");
-      assert.equal(await t.state("meditate", 10), "done", "the re-read took away an edit still on its way to disk");
-      assert.match(await t.file("days/2026-10-30.md"), /^hrv: 65$/m);
-      await t.page.waitForFunction(() => window.wetware.read("days/2026-10-10.md") !== null);
-      await t.saved();
+      assert.equal(await lists(), listed, "the month was read again while an edit was on its way to disk");
       assert.equal(await t.state("meditate", 10), "done");
+      await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_list").length > n, {}, listed);
+      assert.notEqual(await t.file("days/2026-10-10.md"), null, "the month was read again before the edit reached the disk");
+      await t.saved();
+      assert.equal(await t.state("meditate", 10), "done", "the re-read took away the edit");
+      assert.match(await t.file("days/2026-10-30.md"), /^hrv: 65$/m);
       assert.equal(await t.file("days/2026-10-10.md"), "---\ndate: 2026-10-10\nmeditate: true\n_sources:\n  meditate: manual\n---\n");
     },
   },
