@@ -300,6 +300,8 @@ const scenarios = [
       assert.equal(await t.state("weight", 29), "missed");
       assert.equal(await t.count('.grid-cell[data-state="future"]'), 0);
       assert.equal(await t.countText("run"), "1/31");
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      assert.equal(await t.cellText("weight", 30), "172.6");
       await t.shot("month-31-days");
 
       await next();
@@ -376,6 +378,39 @@ const scenarios = [
       assert.match(await t.problem(), /days\/2026-11-12\.md needs fixing by hand.*Map keys must be unique \(line 4\)/);
       assert.equal(await t.file("days/2026-11-12.md"), broken);
       await t.shot();
+    },
+  },
+  {
+    name: "folder-fails",
+    about: "a folder that fails to load leaves nothing from the last one on screen",
+    async run(t) {
+      const nav = (label) => t.page.evaluate((text) => [...document.querySelectorAll(".nav-item")].find((el) => el.textContent === text).click(), label);
+      const folder = () => t.text(".row-value .grow");
+      await nav("Settings");
+      await t.page.waitForSelector('input[aria-label="Latitude"]');
+      assert.equal(await folder(), "/Users/preview/Documents/Wetware Data");
+
+      // The newly chosen folder has a habits.yaml that can't be read.
+      const good = await t.file("habits.yaml");
+      await t.page.evaluate(() => window.wetware.write("habits.yaml", "habits: [oops"));
+      await t.page.click(".row-value .action");
+      await t.page.waitForFunction(() => document.querySelector(".app-main > .mono")?.textContent.includes("Invalid YAML"));
+      assert.equal(await folder(), "/Users/preview/Notes/Wetware");
+      assert.equal(await t.count('input[aria-label="Latitude"]'), 0, "settings from the old folder are still shown");
+      await nav("Month");
+      await t.ready();
+      assert.equal(await t.count("tbody tr"), 0, "habits from the old folder are still shown");
+      await t.shot();
+
+      // Fixed by hand and chosen again: everything loads and the error line clears.
+      await t.page.evaluate((text) => window.wetware.write("habits.yaml", text), good);
+      await nav("Settings");
+      await t.page.click(".row-value .action");
+      await t.page.waitForSelector('input[aria-label="Latitude"]');
+      assert.equal(await t.problem(), null);
+      await nav("Month");
+      await t.ready();
+      assert.equal(await t.count("tbody tr"), 11);
     },
   },
   {
