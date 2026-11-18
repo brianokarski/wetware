@@ -89,6 +89,11 @@ export function weekdayName(key: string): string {
   return localDate(key).toLocaleDateString(LOCALE, { weekday: "long" });
 }
 
+/** "November 17" */
+export function monthAndDay(key: string): string {
+  return localDate(key).toLocaleDateString(LOCALE, { month: "long", day: "numeric" });
+}
+
 /** "Tuesday, November 17, 2026" */
 export function longDate(key: string): string {
   return localDate(key).toLocaleDateString(LOCALE, {

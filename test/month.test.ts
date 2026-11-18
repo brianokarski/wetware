@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  addMonths, dateKey, daysInMonth, longDate, monthDates, monthKey, monthName, monthOf, nextMonth,
+  addMonths, dateKey, daysInMonth, longDate, monthAndDay, monthDates, monthKey, monthName, monthOf, nextMonth,
   parseDateKey, previousMonth, sameMonth, weekday, weekdayInitial, weekdayName,
 } from "../src/data";
 
@@ -135,6 +135,8 @@ describe("months", () => {
       expect(weekdayName("2026-11-17")).toBe("Tuesday");
       expect(longDate("2026-11-17")).toBe("Tuesday, November 17, 2026");
       expect(longDate("2026-01-01")).toBe("Thursday, January 1, 2026");
+      expect(monthAndDay("2026-11-17")).toBe("November 17");
+      expect(monthAndDay("2027-01-01")).toBe("January 1");
       expect(monthName({ year: 2026, month: 11 })).toBe("November");
       expect(monthName({ year: 2027, month: 1 })).toBe("January");
       // Every day of a month falls on the weekday after the one before it.

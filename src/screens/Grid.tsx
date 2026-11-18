@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Mono } from "../components/primitives";
 import {
-  cellPatch, cellState, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate, monthCount, monthDates,
-  monthKey, monthName, monthOf, nextMonth, parseCellInput, previousMonth, readDay, sameMonth, shortNumber,
-  weekdayInitial, withPatch, writeCell,
+  cellNoticeKey, cellPatch, cellState, dayNoticeKey, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate,
+  monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, parseCellInput, previousMonth, readDay,
+  reason, sameMonth, shortNumber, weekdayInitial, withPatch, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
 
@@ -14,9 +14,17 @@ interface Props {
   today: string;
   /** Opens the day panel. It arrives in Milestone 4; until then the hook does nothing. */
   onOpenDay: (date: string) => void;
-  /** Something to tell the user (a failed save, input that wasn't accepted), or null when all is well again. */
-  onProblem: (message: string | null) => void;
+  /**
+   * Puts something on the message line: a failed save, input that wasn't
+   * accepted, a file that needs fixing. `key` says what it is about.
+   */
+  notify: (key: string, text: string) => void;
+  /** Takes notices off the message line once what they were about has gone right. */
+  settle: (...keys: string[]) => void;
 }
+
+/** The notice key for a month that couldn't be loaded. */
+const MONTH_NOTICE = "month";
 
 /** Where keyboard focus sits in the grid. Row -1 is the row of day headers. */
 interface Position {
@@ -48,11 +56,12 @@ const ACCEPTS: Record<string, string> = {
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
+export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
   const [month, setMonth] = useState<YearMonth>(() => monthOf(today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
   const [wanted, setFocus] = useState<Position>(() => ({ row: 0, col: Number(today.slice(8)) - 1 }));
-  const [editing, setEditing] = useState<(Position & { text: string }) | null>(null);
+  /** The open editor. `replace`: the text is selected when it opens, so typing replaces it. */
+  const [editing, setEditing] = useState<(Position & { text: string; replace: boolean }) | null>(null);
   const table = useRef<HTMLTableElement>(null);
   /** Writes still on their way to disk, per date. The screen follows the file once they have all landed. */
   const inFlight = useRef(new Map<string, number>());
@@ -72,8 +81,14 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
     setDays(null);
     setEditing(null);
     loadMonth(fs, month).then(
-      (loaded) => !stale && setDays(loaded),
-      (e) => !stale && onProblem(String(e)),
+      (loaded) => {
+        if (stale) return;
+        setDays(loaded);
+        // The month is here, and so is every day in it that could be read.
+        const readable = Object.values(loaded).filter((day) => !day.error);
+        settle(MONTH_NOTICE, ...readable.map((day) => dayNoticeKey(day.date)));
+      },
+      (e) => !stale && notify(MONTH_NOTICE, `${monthName(month)} could not be loaded. ${reason(e)}`),
     );
     return () => {
       stale = true;
@@ -122,13 +137,15 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
       count.set(date, (count.get(date) ?? 1) - 1);
       return count.get(date) === 0;
     };
+    // A failure stays on the message line until this same cell saves, or it is dismissed.
+    const notice = cellNoticeKey(date, habit.id);
     writeCell(fs, habit, date, value).then(
       (saved) => {
         if (landed()) show(saved);
-        onProblem(null);
+        settle(notice);
       },
       (e) => {
-        onProblem(`${habit.name} was not saved. ${String(e)}`);
+        notify(notice, `${habit.name} on ${monthAndDay(date)} was not saved. ${reason(e)}`);
         // Put back what the file says, which is what was there before.
         if (landed()) readDay(fs, date).then(show, () => show(before));
       },
@@ -145,7 +162,7 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
   const editable = (day: Day): boolean => {
     if (day.date > today) return false;
     if (day.error) {
-      onProblem(`${dayPath(day.date)} needs fixing by hand before it can be changed. ${day.error}`);
+      notify(dayNoticeKey(day.date), `${dayPath(day.date)} needs fixing by hand before it can be changed. ${day.error}`);
       return false;
     }
     return true;
@@ -156,7 +173,8 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
     if (!found || !editable(found.day)) return;
     const { habit, day, cell } = found;
     if (TYPED.has(habit.type)) {
-      setEditing({ ...at, text: startWith ?? (cell.value === null ? "" : String(cell.value)) });
+      // Opened on a value, the value is selected; opened by typing, the typed character starts the entry.
+      setEditing({ ...at, text: startWith ?? (cell.value === null ? "" : String(cell.value)), replace: startWith === undefined });
     } else {
       setCell(habit, day.date, cell.value === null);
     }
@@ -183,7 +201,13 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
     if (!save || !habit) return;
     const parsed = parseCellInput(habit.type, editing.text);
     if (parsed.ok) put(editing, parsed.value);
-    else onProblem(`${habit.name} takes ${ACCEPTS[habit.type]}. "${editing.text.trim()}" was not saved.`);
+    else {
+      const date = dates[editing.col];
+      notify(
+        cellNoticeKey(date, habit.id),
+        `${habit.name} takes ${ACCEPTS[habit.type]}. "${editing.text.trim()}" was not saved for ${monthAndDay(date)}.`,
+      );
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTableElement>) => {
@@ -299,7 +323,7 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
                     data-date={date}
                     tabIndex={focus.row === HEADER_ROW && focus.col === col ? 0 : -1}
                     aria-label={facts.filter(Boolean).join(", ")}
-                    title={day?.error ?? undefined}
+                    title={day?.error ? `${dayPath(date)}: ${day.error}` : undefined}
                     onFocus={() => setFocus({ row: HEADER_ROW, col })}
                     onClick={() => onOpenDay(date)}
                   >
@@ -369,6 +393,7 @@ export function Grid({ fs, habits, today, onOpenDay, onProblem }: Props) {
                           autoComplete="off"
                           spellCheck={false}
                           autoFocus
+                          onFocus={(e) => editing.replace && e.currentTarget.select()}
                           value={editing.text}
                           onChange={(e) => setEditing({ ...editing, text: e.target.value })}
                           onBlur={() => closeEditor(true, false)}

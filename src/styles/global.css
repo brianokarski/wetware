@@ -93,6 +93,34 @@ select {
   gap: var(--gap-section);
 }
 
+/*
+ * The message line. It fills the gap between the header and the screen and is
+ * exactly as tall, so a message arriving or leaving moves nothing below it.
+ */
+.notices {
+  display: flex;
+  align-items: center;
+  column-gap: var(--col-gutter);
+  height: var(--gap-section);
+  margin-block: calc(-1 * var(--gap-section));
+  overflow: hidden;
+}
+
+.notice {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--notice-lines);
+  line-clamp: var(--notice-lines);
+  overflow: hidden;
+  user-select: text;
+}
+
+.notice-dismiss {
+  flex: none;
+}
+
 /* Mono metadata row, like the "NR 17 / Spring Summer / 2023" strip. */
 .meta-row {
   display: grid;
@@ -319,9 +347,9 @@ select {
   color: var(--color-gray);
 }
 
-.grid-day[data-future] .grid-day-button,
-.grid-day[data-future] .grid-weekday {
-  color: var(--color-gray-light);
+/* Days ahead: the number is dimmer than ink but still easy to read. */
+.grid-day[data-future] .grid-day-button {
+  color: var(--color-future);
 }
 
 .grid-day[data-today] .grid-day-button {
