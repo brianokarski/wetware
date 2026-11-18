@@ -1,7 +1,5 @@
 # Wetware
 
-*A ledger for the meat.*
-
 A macOS habit tracker modeled on a bullet-journal monthly spread. Habits run down the left side and each day of the month is a box. Training, sleep, HRV, and weather fill themselves in from intervals.icu and Open-Meteo. You fill in the rest by hand in seconds. It also has a distraction-free morning pages room and a dot-sticker calendar.
 
 No streaks. No cloud. Your data lives in plain markdown files you own, and they're Obsidian-compatible.

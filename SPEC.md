@@ -2,8 +2,6 @@
 
 > **For the agent picking this up:** read this whole file before writing code. Section 10 lists open questions — ask Brian rather than guessing on those. Everything else is decided.
 
-*A ledger for the meat.*
-
 > Wetware keeps the record the body won't. Every morning it pulls what the watch saw in the dark — hours of sleep, the slow drum of a resting heart, the miles run in the gray before the city woke — and lays it down in a grid of small boxes, the color of ink on cheap paper. You fill in the rest by hand. No streaks, no sirens. Just a month of signal building up like static on a dead screen, until the pattern surfaces on its own.
 
 Working title: **Wetware** (placeholder name — may change before any public release)
