@@ -27,7 +27,7 @@ interface Props {
   settle: (...keys: string[]) => void;
 }
 
-/** Where a page begins, measured against the text: how far down its first line starts. */
+/** Where a page begins, measured against the text: how far down its first line starts, in CSS pixels. */
 interface Mark {
   page: number;
   top: number;
@@ -367,7 +367,7 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
               onBlur={saver.now}
             />
             {marks.map((mark) => (
-              <span key={mark.page} className="room-mark mono" data-page={mark.page} style={{ "--at": `${mark.top}px` } as CSSProperties} aria-hidden="true">
+              <span key={mark.page} className="room-mark mono" data-page={mark.page} style={{ "--at": mark.top } as CSSProperties} aria-hidden="true">
                 {mark.page}
               </span>
             ))}

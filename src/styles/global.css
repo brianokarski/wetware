@@ -814,7 +814,7 @@ html[data-room] {
 /* Where a page begins: its number in the margin, on the line it begins on, under a hairline. */
 .room-mark {
   position: absolute;
-  top: var(--at);
+  top: calc(var(--at) * var(--room-unit));
   left: calc(-1 * var(--room-margin));
   width: var(--room-mark);
   height: calc(var(--room-leading) * var(--room-size));

@@ -87,6 +87,7 @@
   --room-said: 2; /* lines kept under the strip for what the room has to say, so the text never moves for it */
   --room-top: var(--space-12); /* between the strip and the first line */
   --room-clear: var(--space-16); /* kept clear under the line being written */
+  --room-unit: 1px; /* what a page mark's place, measured against the text as it is set, is counted in */
   --room-foot: 40vh; /* empty paper under the last line */
 
   /* ── Rules ── */
