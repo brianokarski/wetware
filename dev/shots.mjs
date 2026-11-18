@@ -2655,15 +2655,20 @@ const scenarios = [
       await t.insert(prose(760));
       await t.page.waitForFunction(() => document.querySelectorAll(".room-mark").length === 3);
       assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      // The window has gone down with the writing, to the last line.
+      await t.page.waitForFunction(() => window.scrollY > 0);
       // Scrolled back to where the second page begins: its mark is in the window, in the margin, and the strip is still above.
+      // (The keyboard is taken out of the text first: taking the screenshot would otherwise bring the caret back into view.)
+      await t.page.evaluate(() => document.activeElement.blur());
       await t.page.evaluate(() => window.scrollTo(0, document.querySelector('.room-mark[data-page="2"]').getBoundingClientRect().top + window.scrollY - 200));
       const seen = await t.page.evaluate(() => {
         const mark = document.querySelector('.room-mark[data-page="2"]').getBoundingClientRect();
         const field = document.querySelector(".room-field").getBoundingClientRect();
         const strip = document.querySelector(".room-strip").getBoundingClientRect();
         const second = document.querySelector(".room-strip > :nth-child(2)").getBoundingClientRect();
-        return { mark: [mark.left, mark.right, mark.top], field: [field.left, field.right], strip: [strip.top, strip.bottom], second: second.left, width: window.innerWidth };
+        return { mark: [mark.left, mark.right, mark.top], field: [field.left, field.right], strip: [strip.top, strip.bottom], second: second.left, width: window.innerWidth, height: window.innerHeight };
       });
+      assert.ok(seen.mark[2] > 100 && seen.mark[2] < seen.height - 100, `the second page's mark is at ${seen.mark[2]}px of ${seen.height}px`);
       assert.ok(seen.mark[0] >= 0 && seen.mark[1] < seen.field[0], `the mark is at ${seen.mark[0]} to ${seen.mark[1]}px; the text starts at ${seen.field[0]}px`);
       assert.ok(seen.field[1] <= seen.width, "the text runs off the window");
       assert.ok(seen.strip[0] >= 0 && seen.strip[1] < seen.mark[2], "the strip is not above the text");
