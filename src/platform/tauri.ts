@@ -1,6 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { documentDir, join } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { DataFs } from "../data";
 
 /** File access, scoped by the Rust shell to the chosen data folder. */
@@ -11,23 +9,16 @@ export const tauriFs: DataFs = {
 };
 
 export const getDataRoot = () => invoke<string | null>("get_data_root");
-export const setDataRoot = (path: string) => invoke<void>("set_data_root", { path });
 
-/** Native folder picker. Resolves to null if cancelled. */
-export async function chooseDataRoot(current: string | null): Promise<string | null> {
-  const picked = await open({
-    directory: true,
-    multiple: false,
-    canCreateDirectories: true,
-    title: "Choose where Wetware keeps your data",
-    defaultPath: current ?? (await documentDir()),
-  });
-  return typeof picked === "string" ? picked : null;
-}
-
-export async function suggestedDataRoot(): Promise<string> {
-  return join(await documentDir(), "Wetware Data");
-}
+/**
+ * The webview can't name a data folder. It can ask the shell to show the
+ * native folder picker, or to use the suggested folder; either way the shell
+ * sets the folder itself and reports the path. Null if the picker was cancelled.
+ */
+export const chooseDataRoot = () => invoke<string | null>("choose_data_root");
+export const adoptSuggestedDataRoot = () => invoke<string>("use_suggested_data_root");
+/** `~/Documents/Wetware Data`, spelled out. For display only. */
+export const suggestedDataRoot = () => invoke<string>("suggested_data_root");
 
 /** The key goes into the Keychain and never comes back to the webview. */
 export const intervalsKey = {

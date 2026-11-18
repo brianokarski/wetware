@@ -6,6 +6,8 @@
 
 use keyring::{Entry, Error};
 
+use crate::trace;
+
 const SERVICE: &str = "com.brianokarski.wetware";
 const ACCOUNT: &str = "intervals.icu-api-key";
 
@@ -25,6 +27,7 @@ pub fn intervals_key() -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub fn intervals_key_set(key: String) -> Result<(), String> {
+    trace("intervals_key_set");
     let key = key.trim();
     if key.is_empty() {
         return Err("API key is empty".into());
@@ -34,11 +37,13 @@ pub fn intervals_key_set(key: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn intervals_key_exists() -> Result<bool, String> {
+    trace("intervals_key_exists");
     Ok(intervals_key()?.is_some())
 }
 
 #[tauri::command]
 pub fn intervals_key_delete() -> Result<(), String> {
+    trace("intervals_key_delete");
     match entry()?.delete_credential() {
         Ok(()) | Err(Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),

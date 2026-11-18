@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  loadHabits, loadSettings, morningPagesGoal, saveSettings, setMorningPagesGoal,
-  type Habit, type Settings as SettingsData,
+  HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, saveSettings, setMorningPagesGoal,
+  type Habit, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
 import {
-  chooseDataRoot, getDataRoot, setDataRoot, suggestedDataRoot, tauriFs,
+  chooseDataRoot, getDataRoot, suggestedDataRoot, tauriFs, adoptSuggestedDataRoot,
 } from "./platform/tauri";
 import { Home } from "./screens/Home";
 import { Settings } from "./screens/Settings";
@@ -27,6 +27,7 @@ export default function App() {
   const [dataRoot, setRoot] = useState<string | null>(null);
   const [suggestedRoot, setSuggestedRoot] = useState("");
   const [habits, setHabits] = useState<Habit[]>([]);
+  const [skipped, setSkipped] = useState<SkippedHabit[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const today = new Date();
@@ -35,7 +36,9 @@ export default function App() {
 
   /** Read (and on first use, seed) the data folder. */
   const loadFolder = useCallback(async () => {
-    setHabits(await loadHabits(tauriFs));
+    const file = await loadHabitsFile(tauriFs);
+    setHabits(file.habits);
+    setSkipped(file.skipped);
     setSettings(await loadSettings(tauriFs));
     setError(null);
   }, []);
@@ -52,9 +55,9 @@ export default function App() {
       .finally(() => setReady(true));
   }, [loadFolder]);
 
-  const useFolder = async (path: string | null) => {
+  /** The shell has already switched folders by the time it reports the path. Null: cancelled. */
+  const openFolder = async (path: string | null) => {
     if (!path) return;
-    await setDataRoot(path);
     setRoot(path);
     await loadFolder();
   };
@@ -72,6 +75,12 @@ export default function App() {
 
       <main className="app-main">
         {error && <Mono>{error}</Mono>}
+        {skipped.map((entry) => (
+          <Mono key={entry.index}>
+            {HABITS_FILE}: habit {entry.index + 1}
+            {entry.id === null ? "" : ` (${entry.id})`} is not shown: {entry.reason}.
+          </Mono>
+        ))}
         {screen === "month" && dataRoot && <Home habits={habits} today={today} />}
         {screen === "settings" && (
           <Settings
@@ -79,8 +88,8 @@ export default function App() {
             suggestedRoot={suggestedRoot}
             settings={dataRoot ? settings : null}
             pagesGoal={morningPagesGoal(habits)}
-            onChooseFolder={() => chooseDataRoot(dataRoot).then(useFolder).catch(fail)}
-            onUseSuggested={() => useFolder(suggestedRoot).catch(fail)}
+            onChooseFolder={() => chooseDataRoot().then(openFolder).catch(fail)}
+            onUseSuggested={() => adoptSuggestedDataRoot().then(openFolder).catch(fail)}
             onSave={(patch) => saveSettings(tauriFs, patch).then(setSettings).catch(fail)}
             onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(setHabits).catch(fail)}
           />
