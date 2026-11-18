@@ -1,4 +1,5 @@
 import { stringify } from "yaml";
+import { APP_DAY_KEYS } from "./dayKeys";
 import type { DataFs } from "./fs";
 import { inTurn } from "./queue";
 import { isDict, patchYaml, readYaml, same, YAML_OUT, type YamlOp } from "./yamlPatch";
@@ -204,6 +205,20 @@ function normalise(entry: unknown, position: number): Habit {
   };
 }
 
+/**
+ * Why a habit can't keep its values under its day key, or null if it can. The
+ * key has to be the habit's alone: not one the app owns, and not another
+ * habit's. A tag habit is exempt, because it lives in the tags list and never
+ * writes to its key.
+ */
+function keyClash(habit: Habit, others: Habit[]): string | null {
+  if (habit.type === "tag") return null;
+  const key = dayKey(habit);
+  if (APP_DAY_KEYS.includes(key)) return `would store its values under ${key}, a key the app keeps for itself`;
+  const other = others.find((h) => h.id !== habit.id && h.type !== "tag" && dayKey(h) === key);
+  return other ? `would store its values under ${key}, the same key as ${other.name}` : null;
+}
+
 interface Entry {
   habit: Habit;
   /** Position in the file's list, from 0: the index to patch at. */
@@ -230,6 +245,8 @@ function readFile(raw: string): FileState {
     try {
       const habit = normalise(entry, index + 1);
       if (seen.has(habit.id)) throw new Unusable("repeats an id used earlier in the file");
+      const clash = keyClash(habit, entries.map((e) => e.habit));
+      if (clash) throw new Unusable(clash);
       seen.add(habit.id);
       entries.push({ habit, index });
     } catch (e) {
@@ -300,7 +317,7 @@ function find(state: FileState, id: string): Entry {
 }
 
 /** Operations that bring one entry in line with `changes`, touching only fields that differ. */
-function changeOps(entry: Entry, changes: Partial<Habit>): YamlOp[] {
+function changeOps(state: FileState, entry: Entry, changes: Partial<Habit>): YamlOp[] {
   const { habit, index } = entry;
   if (changes.id !== undefined && changes.id !== habit.id) {
     throw new HabitsError("A habit's id can't be changed: its day values are stored under it");
@@ -310,14 +327,15 @@ function changeOps(entry: Entry, changes: Partial<Habit>): YamlOp[] {
     if (value === undefined || same(value, habit[key])) continue;
     ops.push({ op: "set", path: ["habits", index, key], value });
   }
-  check({ ...habit, ...changes }, index);
+  check(state, { ...habit, ...changes }, index);
   return ops;
 }
 
-/** Throws unless `habit` is something `parseHabits` would read back. */
-function check(habit: Record<string, unknown>, index: number): void {
+/** Throws unless `habit` is something `parseHabits` would read back, beside the habits already there. */
+function check(state: FileState, habit: Record<string, unknown>, index: number): void {
   try {
-    normalise(habit, index + 1);
+    const clash = keyClash(normalise(habit, index + 1), state.entries.map((e) => e.habit));
+    if (clash) throw new Unusable(clash);
   } catch (e) {
     if (e instanceof Unusable) throw new HabitsError(`Not a valid habit: ${e.message}`);
     throw e;
@@ -326,10 +344,10 @@ function check(habit: Record<string, unknown>, index: number): void {
 
 /** Operations that add a habit to the end of the list and of the order. */
 function addOps(state: FileState, habit: NewHabit): YamlOp[] {
-  check(habit, state.length);
   const taken = (id: string) =>
     state.entries.some((e) => e.habit.id === id) || state.skipped.some((s) => s.id === id);
   if (taken(String(habit.id))) throw new HabitsError(`There is already a habit with the id ${habit.id}`);
+  check(state, habit, state.length);
 
   // Known fields in the order SPEC §5.2 lists them, then anything else as given.
   const entry: Record<string, unknown> = {};
@@ -346,7 +364,7 @@ function addOps(state: FileState, habit: NewHabit): YamlOp[] {
 
 /** Changes fields of one habit. Fields that already have the given value are not written. */
 export function updateHabit(fs: DataFs, id: string, changes: Partial<Habit>): Promise<Habit[]> {
-  return patchFile(fs, (state) => changeOps(find(state, id), changes));
+  return patchFile(fs, (state) => changeOps(state, find(state, id), changes));
 }
 
 /** Adds a habit at the end. Only the fields given are written. */
@@ -367,7 +385,7 @@ export function reorderHabits(fs: DataFs, ids: string[]): Promise<Habit[]> {
   return patchFile(fs, (state) => {
     const named = [...new Set(ids)].map((id) => find(state, id));
     const rest = inOrder(state.entries).filter((e) => !named.includes(e));
-    return [...named, ...rest].flatMap((entry, i) => changeOps(entry, { order: i + 1 }));
+    return [...named, ...rest].flatMap((entry, i) => changeOps(state, entry, { order: i + 1 }));
   });
 }
 
@@ -379,18 +397,16 @@ export function reorderHabits(fs: DataFs, ids: string[]): Promise<Habit[]> {
 export function saveHabits(fs: DataFs, habits: Habit[]): Promise<Habit[]> {
   return patchFile(fs, (state) => {
     const ops: YamlOp[] = [];
-    const added = new Set<string>();
-    let { length } = state;
+    // The file as it will be once the habits added so far are in it.
+    const next: FileState = { ...state, entries: [...state.entries] };
     for (const habit of habits) {
       const entry = state.entries.find((e) => e.habit.id === habit.id);
       if (entry) {
-        ops.push(...changeOps(entry, habit));
+        ops.push(...changeOps(next, entry, habit));
         continue;
       }
-      if (added.has(habit.id)) throw new HabitsError(`There is already a habit with the id ${habit.id}`);
-      added.add(habit.id);
       // New to the file: leave out whatever is only a default.
-      const position = ++length;
+      const position = next.length + 1;
       const given = Object.entries(habit).filter(([key, value]) => {
         if (key === "id") return true;
         if (key === "name") return value !== habit.id;
@@ -398,7 +414,9 @@ export function saveHabits(fs: DataFs, habits: Habit[]): Promise<Habit[]> {
         if (key === "order") return value !== position;
         return !(key in DEFAULTS) || !same(value, DEFAULTS[key as keyof typeof DEFAULTS]);
       });
-      ops.push(...addOps({ ...state, length: position - 1 }, Object.fromEntries(given) as NewHabit));
+      ops.push(...addOps(next, Object.fromEntries(given) as NewHabit));
+      next.entries.push({ habit, index: next.length });
+      next.length = position;
     }
     return ops;
   });
@@ -416,6 +434,6 @@ export function setMorningPagesGoal(fs: DataFs, goal: number): Promise<Habit[]> 
   return patchFile(fs, (state) => {
     const entry = state.entries.find((e) => e.habit.source === "morning_pages");
     if (!entry) throw new HabitsError("No habit has morning_pages as its source");
-    return changeOps(entry, { goal });
+    return changeOps(state, entry, { goal });
   });
 }
