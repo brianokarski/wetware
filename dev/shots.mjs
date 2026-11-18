@@ -2602,6 +2602,13 @@ const scenarios = [
         const lines = (mark.page - 1) * 250;
         assert.ok(Math.abs(mark.top - lines * size.line) < 1.5, `page ${mark.page} begins ${lines} lines down, at ${lines * size.line}px; its mark is at ${mark.top}px`);
       }
+      // Blank lines at the end are part of the text, and the field is tall enough to show them.
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+      await t.insert("\n\n\n");
+      const trailing = await sizes();
+      assert.ok(Math.abs(trailing.field - trailing.inside) < 1 && Math.abs(trailing.field - trailing.copy) < 1, `with blank lines at its end the field is ${trailing.field}px tall, its text ${trailing.inside}px`);
+      assert.ok(Math.abs(trailing.field - 763 * size.line) < 2, `763 lines came to ${trailing.field / size.line} lines`);
+      for (let i = 0; i < 3; i++) await t.page.keyboard.press("Backspace");
       // Taking words out takes the marks with them.
       await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.indexOf("\nw501"), el.value.length));
       await t.page.keyboard.press("Backspace");
