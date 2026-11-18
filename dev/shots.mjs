@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import { mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
 import { createServer } from "vite";
 
@@ -29,6 +30,291 @@ const lines = (text) => text.split("\n");
 function changed(before, after) {
   const [a, b] = [lines(before), lines(after)];
   return { added: b.filter((l) => !a.includes(l)), removed: a.filter((l) => !b.includes(l)) };
+}
+
+/** A PNG's pixels. Only what Chrome's screenshots use: 8 bits a channel, RGB or RGBA, not interlaced. */
+function decodePng(png) {
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  const chunks = [];
+  for (let pos = 8; pos < png.length; ) {
+    const length = png.readUInt32BE(pos);
+    const type = png.toString("latin1", pos + 4, pos + 8);
+    const body = png.subarray(pos + 8, pos + 8 + length);
+    if (type === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      channels = { 2: 3, 6: 4 }[body[9]];
+      assert.ok(body[8] === 8 && channels && body[12] === 0, "a kind of PNG this script doesn't read");
+    }
+    if (type === "IDAT") chunks.push(body);
+    pos += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(chunks));
+  const stride = width * channels;
+  const out = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    for (let x = 0; x < stride; x++) {
+      const left = x >= channels ? out[y * stride + x - channels] : 0;
+      const up = y > 0 ? out[(y - 1) * stride + x] : 0;
+      const upLeft = x >= channels && y > 0 ? out[(y - 1) * stride + x - channels] : 0;
+      let predicted = 0;
+      if (filter === 1) predicted = left;
+      else if (filter === 2) predicted = up;
+      else if (filter === 3) predicted = (left + up) >> 1;
+      else if (filter === 4) {
+        const [a, b, c] = [Math.abs(up - upLeft), Math.abs(left - upLeft), Math.abs(left + up - 2 * upLeft)];
+        predicted = a <= b && a <= c ? left : b <= c ? up : upLeft;
+      }
+      out[y * stride + x] = (raw[y * (stride + 1) + 1 + x] + predicted) & 255;
+    }
+  }
+  return { width, height, at: (x, y) => out.subarray((y * width + x) * channels, (y * width + x) * channels + 3) };
+}
+
+const SCALE = 2; // device pixels per CSS pixel in the screenshots
+/** How light a colour is, 0 (black) to 255 (white). */
+const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+const INK = 60; // at most this light: drawn in ink
+const PAPER = 250; // at least this light: nothing drawn
+/** Between ink and paper: a gray mark, a faint rule, a wash. */
+const isGray = (value) => value > 90 && value < 248;
+
+/**
+ * What is actually on screen, from a screenshot: `darkest` and `lightest`
+ * give the darkest and lightest pixel within a device pixel of a point, in
+ * CSS pixels, so a hairline is found even when it lands between two pixels.
+ */
+async function pixels(page) {
+  const png = decodePng(await page.screenshot({ type: "png" }));
+  const near = (x, y) => {
+    const found = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const px = Math.min(png.width - 1, Math.max(0, Math.round(x * SCALE) + dx));
+        const py = Math.min(png.height - 1, Math.max(0, Math.round(y * SCALE) + dy));
+        found.push(luma(png.at(px, py)));
+      }
+    }
+    return found;
+  };
+  /** The darkest pixel anywhere in a box: whether anything at all is drawn there. */
+  const darkestIn = (box) => {
+    let found = 255;
+    for (let y = Math.ceil(box.top * SCALE); y < Math.floor(box.bottom * SCALE); y++) {
+      for (let x = Math.ceil(box.left * SCALE); x < Math.floor(box.right * SCALE); x++) {
+        if (x >= 0 && y >= 0 && x < png.width && y < png.height) found = Math.min(found, luma(png.at(x, y)));
+      }
+    }
+    return found;
+  };
+  return { darkest: (x, y) => Math.min(...near(x, y)), lightest: (x, y) => Math.max(...near(x, y)), darkestIn };
+}
+
+/** Sizes, positions and computed styles of everything in the grid, measured in the page. */
+function measure(page) {
+  return page.evaluate(() => {
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 };
+    };
+    const table = document.querySelector(".grid");
+    // What the stylesheet thinks a day column's width is, to compare with what it measures.
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;visibility:hidden;width:var(--grid-day)";
+    table.querySelector("tbody tr").appendChild(probe);
+    const assumedDay = probe.getBoundingClientRect().width;
+    probe.remove();
+    const cells = [...table.querySelectorAll("td.grid-cell")].map((td) => {
+      const mark = td.querySelector(".mark");
+      const style = mark && getComputedStyle(mark);
+      return {
+        habit: td.dataset.habit,
+        day: Number(td.dataset.date.slice(8)),
+        state: td.dataset.state,
+        box: box(td),
+        mark: mark && { box: box(mark), display: style.display, visibility: style.visibility, image: style.backgroundImage, color: style.backgroundColor },
+        values: [...td.querySelectorAll("span")]
+          .filter((span) => span.textContent && parseFloat(getComputedStyle(span).fontSize) > 0)
+          .map((span) => ({ text: span.textContent, box: box(span), size: parseFloat(getComputedStyle(span).fontSize) })),
+      };
+    });
+    const heads = [...table.querySelectorAll(".grid-day-button")].map((button) => {
+      const style = getComputedStyle(button);
+      const th = button.closest("th");
+      return { day: Number(button.dataset.date.slice(8)), box: box(button), color: style.color, background: style.backgroundColor, today: "today" in th.dataset, future: "future" in th.dataset };
+    });
+    return {
+      table: box(table),
+      layout: getComputedStyle(table).tableLayout,
+      habitColumn: box(table.querySelector("tbody th")),
+      countColumn: box(table.querySelector("tbody td.grid-count")),
+      rows: [...table.querySelectorAll("tbody tr")].map(box),
+      assumedDay,
+      cells,
+      heads,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    };
+  });
+}
+
+/** Contrast ratio of a CSS rgb() colour against white, as WCAG defines it. */
+function contrastOnWhite(color) {
+  const channel = (v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4);
+  const [r, g, b] = color.match(/[\d.]+/g).map(Number);
+  return 1.05 / (0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b) + 0.05);
+}
+
+/**
+ * Checks that the fixture month is drawn the way it should be: not that the
+ * right attributes are set, but that the marks, rules, wash and columns are
+ * where they belong and visible, from measured geometry and from the pixels
+ * of a screenshot. Call it with nothing focused and the pointer off the grid.
+ */
+async function checkDrawing(t) {
+  await t.page.mouse.move(2, 2);
+  const m = await measure(t.page);
+  const px = await pixels(t.page);
+  const at = (habit, day) => m.cells.find((c) => c.habit === habit && c.day === day);
+  const wide = m.viewport.width >= 1200;
+  /** The box of the mark in a cell, which has to be there. */
+  const markOf = (habit, day, what) => {
+    assert.ok(at(habit, day).mark, `${habit} ${day}: ${what} is not there`);
+    return at(habit, day).mark.box;
+  };
+
+  // ── Columns: measured, not taken from the stylesheet's arithmetic. ──
+  assert.equal(m.layout, "fixed", "the table's columns are sized by their content");
+  const firstRow = m.cells.filter((c) => c.habit === m.cells[0].habit);
+  const widths = firstRow.map((c) => c.box.width);
+  const dayWidth = widths[0];
+  assert.ok(Math.max(...widths) - Math.min(...widths) < 0.6, `day columns differ in width: ${Math.min(...widths)} to ${Math.max(...widths)}`);
+  assert.ok(dayWidth >= (wide ? 30 : 22), `day columns are ${dayWidth}px wide: too narrow to read`);
+  assert.ok(Math.abs(m.assumedDay - dayWidth) < 1, `the stylesheet sizes values for ${m.assumedDay}px columns, but they are ${dayWidth}px`);
+  assert.ok(m.habitColumn.width >= 120 && m.habitColumn.width <= m.table.width * 0.22, `habit column is ${m.habitColumn.width}px of ${m.table.width}px`);
+  assert.ok(m.countColumn.width >= 40 && m.countColumn.width <= 80, `count column is ${m.countColumn.width}px`);
+  assert.ok(Math.abs(m.habitColumn.width + dayWidth * firstRow.length + m.countColumn.width - m.table.width) < 2, "the columns don't add up to the table");
+  assert.ok(m.table.right <= m.viewport.width + 0.5, "the table runs off the right edge");
+  const heights = m.rows.map((r) => r.height);
+  assert.ok(Math.max(...heights) - Math.min(...heights) < 0.6 && heights[0] >= 24, `rows are ${Math.min(...heights)} to ${Math.max(...heights)}px tall`);
+
+  // ── Day headers sit over their columns. ──
+  for (const head of m.heads) {
+    const below = firstRow.find((c) => c.day === head.day);
+    assert.ok(Math.abs(head.box.cx - below.box.cx) < 1, `day ${head.day}'s header is not over its column`);
+    assert.ok(head.box.bottom <= below.box.top + 0.5, `day ${head.day}'s header overlaps the first row`);
+  }
+
+  // ── Every value is inside its own box, at a size that can be read. ──
+  for (const cell of m.cells) {
+    for (const value of cell.values) {
+      const inside = value.box.left >= cell.box.left - 0.5 && value.box.right <= cell.box.right + 0.5 && value.box.top >= cell.box.top - 0.5 && value.box.bottom <= cell.box.bottom + 0.5;
+      assert.ok(inside, `${cell.habit} ${cell.day}: "${value.text}" runs outside its box`);
+      assert.ok(value.size >= 9, `${cell.habit} ${cell.day}: "${value.text}" is set at ${value.size}px`);
+      assert.ok(px.darkestIn(value.box) < 120, `${cell.habit} ${cell.day}: "${value.text}" is not drawn`);
+    }
+  }
+
+  // ── Every mark has a size, is inside its box, and is drawn. ──
+  for (const cell of m.cells.filter((c) => c.mark)) {
+    const { box, display, visibility } = cell.mark;
+    const where = `${cell.habit} ${cell.day}`;
+    assert.ok(display !== "none" && visibility === "visible", `${where}: its mark is hidden`);
+    assert.ok(box.width >= 3 && box.height >= 1, `${where}: its mark is ${box.width} by ${box.height}px`);
+    assert.ok(box.left >= cell.box.left && box.right <= cell.box.right && box.top >= cell.box.top && box.bottom <= cell.box.bottom, `${where}: its mark is outside its box`);
+    assert.ok(px.darkestIn({ left: box.left - 0.5, right: box.right + 0.5, top: box.top - 0.5, bottom: box.bottom + 0.5 }) < 215, `${where}: nothing is drawn where its mark is`);
+  }
+
+  // Done, check habit: a ✕ in ink. Dark at the centre and along a diagonal, paper between the strokes.
+  const cross = markOf("run", 1, "the ✕");
+  assert.ok(cross.width >= 12 && Math.abs(cross.width - cross.height) < 1, `the ✕ is ${cross.width} by ${cross.height}px`);
+  assert.ok(px.darkest(cross.cx, cross.cy) < INK, "the ✕ has no centre");
+  assert.ok(px.darkest(cross.left + cross.width * 0.25, cross.top + cross.height * 0.25) < INK, "the ✕ has no stroke from the top left");
+  assert.ok(px.darkest(cross.right - cross.width * 0.25, cross.top + cross.height * 0.25) < INK, "the ✕ has no stroke from the top right");
+  assert.ok(px.lightest(cross.cx, cross.top + cross.height * 0.1) > PAPER, "the ✕ is a solid block");
+
+  // No data: a short gray dash, with paper above and below it. Not empty, not ink.
+  const dashCell = at("sleep", 5);
+  assert.equal(dashCell.state, "no_data");
+  const dash = markOf("sleep", 5, "the no-data dash");
+  for (const cell of m.cells.filter((c) => c.state === "no_data")) markOf(cell.habit, cell.day, "the no-data dash");
+  assert.ok(dash.width >= 4 && dash.width <= dashCell.box.width / 2, `the no-data dash is ${dash.width}px wide`);
+  assert.ok(isGray(px.darkest(dash.cx, dash.cy)), `the no-data dash is not a gray mark (${px.darkest(dash.cx, dash.cy)})`);
+  assert.ok(px.lightest(dash.cx, dashCell.box.top + dashCell.box.height * 0.25) > PAPER, "the no-data box is not empty above its dash");
+
+  // A tag: a small solid square in ink.
+  const tag = markOf("travel", 7, "the tag marker");
+  assert.ok(tag.width >= 5 && tag.width <= 10 && Math.abs(tag.width - tag.height) < 0.5, `the tag marker is ${tag.width} by ${tag.height}px`);
+  assert.ok(px.darkest(tag.cx, tag.cy) < INK, "the tag marker is not ink");
+
+  // Progress part-way (300 of 750): a box filled gray from the bottom to about two fifths.
+  const fill = markOf("morning_pages", 3, "the progress box");
+  assert.ok(fill.height >= 12, `the progress box is ${fill.height}px tall`);
+  assert.ok(isGray(px.darkest(fill.cx, fill.bottom - fill.height * 0.2)), "the progress box is not filled at the bottom");
+  assert.ok(px.lightest(fill.cx, fill.bottom - fill.height * 0.65) > PAPER, "the progress box is filled past its share");
+  assert.ok(isGray(px.darkest(fill.left + 0.5, fill.cy)), "the progress box has no outline");
+  // Progress at or past the goal: the ✕.
+  const met = markOf("morning_pages", 1, "the ✕ of a met goal");
+  assert.ok(px.darkest(met.cx, met.cy) < INK, "a met goal has no ✕");
+
+  // Missed and future: nothing in the box. Pending, in today's column: nothing but the wash.
+  const missed = at("weight", 4).box;
+  const pending = at("weight", 17).box;
+  const future = at("weight", 18).box;
+  assert.ok(px.darkest(missed.cx, missed.cy) > PAPER, "a missed box is not empty");
+  assert.ok(px.darkest(future.cx, future.cy) > PAPER, "a future box is not empty");
+  const wash = px.darkest(pending.cx, pending.cy);
+  assert.ok(wash > 200 && wash < 248, `today's column has no wash (${wash})`);
+  for (const cell of m.cells.filter((c) => c.day === 17 && !c.mark && c.values.length === 0)) {
+    assert.ok(px.lightest(cell.box.cx, cell.box.cy) < 248, `today's wash stops short of ${cell.habit}`);
+  }
+
+  // ── Today's header is the black one. ──
+  const today = m.heads.find((h) => h.today);
+  const other = m.heads.find((h) => h.day === 10);
+  assert.equal(today.day, 17);
+  assert.ok(px.lightest(today.box.left + 3, today.box.top + 3) < INK, "today's header is not black");
+  assert.ok(px.darkest(other.box.left + 3, other.box.top + 3) > PAPER, "another day's header is not on paper");
+  assert.ok(contrastOnWhite(today.color) < 1.1, `today's day number is ${today.color} on black`);
+  assert.equal(m.heads.filter((h) => h.background !== other.background).length, 1, "today's is not the only header that differs");
+
+  // ── Rules: ink above days lived, faint above days ahead, faint between days. ──
+  const lived = at("lift", 10).box;
+  const ahead = at("lift", 20).box;
+  assert.ok(px.darkest(lived.cx, lived.top + 0.5) < INK, "a past day has no ink rule above it");
+  assert.ok(px.darkest(pending.cx, pending.top + 0.5) < INK, "today has no ink rule above it");
+  assert.ok(isGray(px.darkest(ahead.cx, ahead.top + 0.5)) && px.darkest(ahead.cx, ahead.top + 0.5) > 190, `a future day is ruled in ink (${px.darkest(ahead.cx, ahead.top + 0.5)})`);
+  assert.ok(isGray(px.darkest(lived.left + 0.5, lived.cy)) && px.darkest(lived.left + 0.5, lived.cy) > 190, "days are not divided by a faint rule");
+  assert.ok(px.darkest(m.table.left + 20, m.table.bottom - 0.5) < INK, "the table has no rule under it");
+
+  // ── Day numbers ahead can be read (4.5:1 or better), and are dimmer than those behind. ──
+  const past = m.heads.find((h) => h.day === 10);
+  for (const head of m.heads.filter((h) => h.future)) {
+    assert.ok(contrastOnWhite(head.color) >= 4.5, `day ${head.day}'s number is ${head.color}: ${contrastOnWhite(head.color).toFixed(2)}:1 on white`);
+    assert.ok(contrastOnWhite(head.color) < contrastOnWhite(past.color), `day ${head.day}'s number is as dark as a past day's`);
+  }
+  const aheadHead = m.heads.find((h) => h.day === 24).box;
+  assert.ok(px.darkest(aheadHead.cx - 2, aheadHead.bottom - 13) < 170 || px.darkest(aheadHead.cx + 2, aheadHead.bottom - 13) < 170, "a future day number is too faint to see");
+  return m;
+}
+
+/** Checks that the focused cell or day header shows a focus ring, in the pixels and not only in the styles. */
+async function checkFocusRing(t, label) {
+  const focused = await t.page.evaluate(() => {
+    const el = document.activeElement;
+    const style = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth), left: r.left, top: r.top, right: r.right, bottom: r.bottom, cy: (r.top + r.bottom) / 2, cx: (r.left + r.right) / 2 };
+  });
+  assert.equal(focused.style, "solid", `${label}: no focus outline`);
+  assert.ok(focused.width >= 2, `${label}: the focus outline is ${focused.width}px`);
+  await t.page.mouse.move(2, 2);
+  const px = await pixels(t.page);
+  // The ring is drawn just inside the edges: dark on all four sides.
+  const sides = [[focused.left + 1, focused.cy], [focused.right - 1, focused.cy], [focused.cx, focused.top + 1], [focused.cx, focused.bottom - 1]];
+  for (const [x, y] of sides) assert.ok(px.darkest(x, y) < INK, `${label}: the focus ring is not drawn at ${Math.round(x)}, ${Math.round(y)}`);
 }
 
 const scenarios = [
@@ -63,6 +349,7 @@ const scenarios = [
       assert.equal(await t.count(".grid-notes"), 4);
       // Nothing scrolls sideways.
       assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      await checkDrawing(t);
       await t.shot();
     },
   },
@@ -79,6 +366,9 @@ const scenarios = [
       assert.equal(await t.cellText("sleep", 1), "7.9");
       assert.ok((await t.fontSize("weight", 6)) >= 9, "values too small to read");
       assert.equal(await t.fontSize("weight", 6), await t.fontSize("weight", 13));
+      const m = await checkDrawing(t);
+      // The whole grid is in view at the smallest window.
+      assert.ok(m.table.bottom <= m.viewport.height, `the grid ends at ${m.table.bottom}px in a ${m.viewport.height}px window`);
       await t.shot();
     },
   },
@@ -113,16 +403,41 @@ const scenarios = [
       assert.deepEqual(changed(before, await t.file(TODAY_FILE)), { added: ["weight_lb: 171.4", "  weight_lb: manual"], removed: [] });
       assert.equal(await t.focused(), "weight 2026-11-17");
 
+      // Opening the editor on a value selects it, so typing replaces it (review N-1).
+      const selection = () => t.page.evaluate(() => [document.activeElement.value, document.activeElement.selectionStart, document.activeElement.selectionEnd]);
+      await t.click("sleep", 17);
+      assert.deepEqual(await selection(), ["7.7", 0, 3]);
+      await t.page.keyboard.type("5");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      assert.match(await t.file(TODAY_FILE), /^sleep_h: 5$/m);
+      assert.equal(await t.cellText("sleep", 17), "5");
+      // The same from the keyboard: Enter opens with the value selected.
+      await t.page.keyboard.press("Enter");
+      assert.deepEqual(await selection(), ["5", 0, 1]);
+      await t.page.keyboard.type("6.5");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      assert.match(await t.file(TODAY_FILE), /^sleep_h: 6\.5$/m);
+
       // Escape leaves the file alone. So does input that isn't a number, which is also explained.
       const saved = await t.file(TODAY_FILE);
+      const other = await t.file("days/2026-11-16.md");
       await t.click("weight", 17);
       await t.page.keyboard.type("9");
       await t.page.keyboard.press("Escape");
       await t.click("weight", 16);
       await t.page.keyboard.type("abc");
       await t.page.keyboard.press("Enter");
-      assert.match(await t.problem(), /Weight takes a number/);
+      assert.equal(await t.problem(), 'Weight takes a number. "abc" was not saved for November 16.');
+      // Nor does a number too large to be a day's anything (review N-4).
+      await t.click("weight", 16);
+      await t.page.keyboard.type("99999999999999999999");
+      await t.page.keyboard.press("Enter");
+      assert.equal(await t.problem(), 'Weight takes a number. "99999999999999999999" was not saved for November 16.');
+      await t.saved();
       assert.equal(await t.file(TODAY_FILE), saved);
+      assert.equal(await t.file("days/2026-11-16.md"), other);
       await t.shot("cell-edit-rejected");
     },
   },
@@ -168,6 +483,23 @@ const scenarios = [
         removed: ["meditate: true", "tags: [travel]"],
       });
 
+      // On again: tags is still written between brackets, not over lines (review N-2).
+      const off = await t.file(TODAY_FILE);
+      await t.click("travel", 17);
+      await t.saved();
+      assert.deepEqual(changed(off, await t.file(TODAY_FILE)), { added: ["tags: [travel]"], removed: ["tags: []"] });
+
+      // A day whose tags is a map, not a list: the tick is turned down and the file is left alone (review N-3).
+      const mapped = (await t.file("days/2026-11-15.md")).replace("_sources:\n", "tags:\n  travel: true\n  note: keep me\n_sources:\n");
+      await t.page.evaluate((text) => window.wetware.write("days/2026-11-15.md", text), mapped);
+      await t.reload();
+      await t.click("travel", 15);
+      await t.told("Travel on November 15 was not saved. tags has to be a list");
+      await t.saved();
+      assert.equal(await t.state("travel", 15), "missed");
+      assert.equal(await t.file("days/2026-11-15.md"), mapped);
+      await t.page.click(".notice-dismiss");
+
       // A tag on a day with hand-added keys, a comment and notes: nothing else moves.
       const hand = await t.file("days/2026-11-10.md");
       await t.click("travel", 10);
@@ -204,6 +536,7 @@ const scenarios = [
       // Arrows, Home and End.
       await key("ArrowLeft");
       assert.equal(await t.focused(), "weight 2026-11-16");
+      await checkFocusRing(t, "a focused cell");
       await key("Home");
       assert.equal(await t.focused(), "weight 2026-11-01");
       await key("ArrowLeft");
@@ -212,6 +545,7 @@ const scenarios = [
       assert.equal(await t.focused(), "weight 2026-11-30");
       await key("ArrowUp");
       assert.equal(await t.focused(), "day 2026-11-30");
+      await checkFocusRing(t, "a focused day header");
       await key("ArrowUp");
       assert.equal(await t.focused(), "day 2026-11-30");
       for (let i = 0; i < 13; i++) await key("ArrowLeft");
@@ -346,11 +680,11 @@ const scenarios = [
       const before = await t.file(TODAY_FILE);
       await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
       await t.click("meditate", 17);
-      await t.page.waitForFunction(() => document.querySelector(".app-main > .mono")?.textContent.includes("was not saved"));
+      await t.told("was not saved");
       await t.saved();
       assert.equal(await t.state("meditate", 17), "pending");
       assert.equal(await t.file(TODAY_FILE), before);
-      assert.match(await t.problem(), /Meditate was not saved\. No space left on device/);
+      assert.equal(await t.problem(), "Meditate on November 17 was not saved. No space left on device (os error 28)");
       await t.shot();
 
       // The next save that works clears the message.
@@ -380,6 +714,170 @@ const scenarios = [
       await t.shot();
     },
   },
+  ...[["notices", WIDE], ["notices-960", SMALL]].map(([name, size]) => ({
+    name,
+    size,
+    about: "messages have a place of their own, and a failure stays until its own cell saves",
+    async run(t) {
+      const place = await t.gridBox();
+      const notice = () => t.page.$eval(".notice", (el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, role: el.getAttribute("role"), title: el.title }));
+      const dismiss = () => t.page.$eval(".notice-dismiss", (el) => el.textContent).catch(() => null);
+      const unmoved = async (when) => assert.deepEqual(await t.gridBox(), place, `the grid moved ${when}`);
+
+      // SF-1. A message that arrives between mouse-down and mouse-up: the click still lands on the cell under the pointer.
+      await t.click("stretch", 17);
+      await t.page.keyboard.type("abc");
+      await t.click("lift", 17);
+      await t.saved();
+      const rejected = 'Stretch takes a whole number, 0 or more. "abc" was not saved for November 17.';
+      assert.equal(await t.problem(), rejected);
+      assert.equal(await t.state("lift", 17), "done", "the click was lost");
+      await unmoved("when a message appeared");
+      assert.equal((await notice()).role, "alert");
+      assert.equal(await dismiss(), "Dismiss");
+      // The message sits in the gap between the header strip and the month strip.
+      const strips = await t.page.$$eval(".meta-row", (els) => els.map((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom })));
+      assert.ok((await notice()).top >= strips[0].bottom - 0.5 && (await notice()).bottom <= strips[1].top + 0.5, "the message is not in the gap under the header");
+
+      // SF-2. A save that fails, then one elsewhere on the same day that works: the failure is still there.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.click("meditate", 17);
+      const failed = "Meditate on November 17 was not saved. No space left on device (os error 28)";
+      await t.told(failed);
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.click("travel", 17);
+      await t.saved();
+      assert.equal(await t.state("travel", 17), "done");
+      assert.equal(await t.state("meditate", 17), "pending");
+      assert.equal(await t.problem(), failed, "a later save elsewhere erased the failure");
+      assert.equal(await dismiss(), "Dismiss (1 of 2)");
+      await unmoved("after a save elsewhere");
+      await t.shot();
+
+      // Dismissing it shows the one behind it. That one goes when its own cell saves.
+      await t.page.click(".notice-dismiss");
+      assert.equal(await t.problem(), rejected);
+      await unmoved("when a message was dismissed");
+      await t.click("stretch", 17);
+      await t.page.keyboard.type("15");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      assert.equal(await t.problem(), null);
+      assert.equal(await dismiss(), null);
+      await unmoved("when the last message went");
+
+      // A failure also goes when the same cell saves.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.click("meditate", 17);
+      await t.told(failed);
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.click("meditate", 17);
+      await t.saved();
+      assert.equal(await t.state("meditate", 17), "done");
+      assert.equal(await t.problem(), null);
+
+      // A message too long for the line is cut short there, with all of it in its tooltip, and still moves nothing.
+      const long = `Disk trouble: ${"the volume is not responding, ".repeat(30)}try again.`;
+      await t.page.evaluate((message) => window.wetware.failWrites(message), long);
+      await t.click("brain_fog", 17);
+      await t.page.keyboard.type("2");
+      await t.page.keyboard.press("Enter");
+      await t.told("Disk trouble");
+      await t.saved();
+      assert.equal((await notice()).title, `Brain fog on November 17 was not saved. ${long}`);
+      assert.ok((await notice()).bottom <= strips[1].top + 0.5, "a long message runs into the month");
+      await unmoved("under a long message");
+      await t.shot(`${name}-long`);
+    },
+  })),
+  {
+    name: "unreadable-day",
+    about: "a day file that can't be read is hatched out; the rest of the month loads and can be changed",
+    async run(t) {
+      const path = "days/2026-11-05.md";
+      const original = await t.file(path);
+      await t.page.evaluate((p) => window.wetware.failRead(p, "stream did not contain valid UTF-8"), path);
+      await t.reload();
+      // The month is there, apart from that day.
+      assert.equal(await t.count(".grid-flag"), 1);
+      assert.equal(await t.state("run", 5), undefined);
+      assert.equal(await t.state("run", 1), "done");
+      assert.equal(await t.state("sleep", 4), "done");
+      assert.equal(await t.countText("run"), "6/30");
+      assert.equal(await t.problem(), null);
+      assert.equal(
+        await t.page.$eval('.grid-day-button[data-date="2026-11-05"]', (el) => el.title),
+        "days/2026-11-05.md: The file could not be read: stream did not contain valid UTF-8.",
+      );
+      // Its column is hatched: something gray is drawn in a box that holds no mark.
+      await t.page.mouse.move(2, 2);
+      const px = await pixels(t.page);
+      const box = (await measure(t.page)).cells.find((c) => c.habit === "weight" && c.day === 5).box;
+      const inner = { left: box.left + 3, right: box.right - 3, top: box.top + 3, bottom: box.bottom - 3 };
+      assert.ok(isGray(px.darkestIn(inner)), "the unreadable day is not hatched");
+
+      // Other days can be changed.
+      const before = await t.file(TODAY_FILE);
+      await t.click("meditate", 17);
+      await t.saved();
+      assert.deepEqual(changed(before, await t.file(TODAY_FILE)), { added: ["meditate: true", "  meditate: manual"], removed: [] });
+
+      // That day can't, and the message names the file.
+      await t.click("weight", 5);
+      assert.equal(
+        await t.problem(),
+        "days/2026-11-05.md needs fixing by hand before it can be changed. The file could not be read: stream did not contain valid UTF-8.",
+      );
+      assert.equal(await t.count(".grid-input"), 0);
+      await t.click("run", 5);
+      await t.saved();
+      assert.equal(await t.file(path), original);
+      await t.shot();
+
+      // Once the file can be read again, the day comes back and the message goes.
+      await t.page.evaluate((p) => window.wetware.failRead(p, null), path);
+      await t.reload();
+      assert.equal(await t.count(".grid-flag"), 0);
+      assert.equal(await t.state("run", 5), "done");
+      assert.equal(await t.problem(), null);
+
+      // The days folder itself failing is a different matter: the month can't load, and says so until one does.
+      await t.page.evaluate(() => window.wetware.failList("Permission denied (os error 13)"));
+      await t.page.click(".month-nav button:first-child");
+      await t.told("October could not be loaded. Permission denied (os error 13)");
+      await t.page.evaluate(() => window.wetware.failList(null));
+      await t.page.click(".month-nav button:nth-child(2)");
+      await t.ready();
+      assert.equal(await t.problem(), null);
+      assert.equal(await t.state("run", 1), "done");
+    },
+  },
+  {
+    name: "skipped-habit",
+    about: "a habit that would write over one of the app's own keys is left out, with a reason",
+    async run(t) {
+      const nav = (label) => t.page.evaluate((text) => [...document.querySelectorAll(".nav-item")].find((el) => el.textContent === text).click(), label);
+      const place = await t.gridBox();
+      const day = await t.file("days/2026-11-14.md");
+      const habits = await t.file("habits.yaml");
+      await t.page.evaluate((text) => window.wetware.write("habits.yaml", text), `${habits}  - id: tags\n    name: Tagged\n  - id: sleep_h\n    name: Nap\n`);
+      await nav("Settings");
+      await t.page.click(".row-value .action");
+      await t.told("habits.yaml: 2 habits are not shown.");
+      assert.equal(
+        await t.problem(),
+        "habits.yaml: 2 habits are not shown. Habit 13 (tags) would store its values under tags, a key the app keeps for itself. Habit 14 (sleep_h) would store its values under sleep_h, the same key as Sleep.",
+      );
+      await nav("Month");
+      await t.ready();
+      assert.equal(await t.count("tbody tr"), 11);
+      assert.equal(await t.count('.grid-cell[data-habit="tags"]'), 0);
+      assert.equal(await t.count('.grid-cell[data-habit="sleep_h"]'), 0);
+      assert.deepEqual(await t.gridBox(), place, "the notice moved the grid");
+      assert.equal(await t.file("days/2026-11-14.md"), day);
+      await t.shot();
+    },
+  },
   {
     name: "folder-fails",
     about: "a folder that fails to load leaves nothing from the last one on screen",
@@ -394,7 +892,7 @@ const scenarios = [
       const good = await t.file("habits.yaml");
       await t.page.evaluate(() => window.wetware.write("habits.yaml", "habits: [oops"));
       await t.page.click(".row-value .action");
-      await t.page.waitForFunction(() => document.querySelector(".app-main > .mono")?.textContent.includes("Invalid YAML"));
+      await t.told("habits.yaml could not be loaded. Invalid YAML");
       assert.equal(await folder(), "/Users/preview/Notes/Wetware");
       assert.equal(await t.count('input[aria-label="Latitude"]'), 0, "settings from the old folder are still shown");
       await nav("Month");
@@ -477,7 +975,11 @@ function tools(page, name, base) {
       }),
     countText: (habit) => page.$eval(`${cell(habit, 1)} ~ .grid-count`, (el) => el.textContent),
     /** The message on the error line, or null. */
-    problem: () => page.evaluate(() => document.querySelector(".app-main > .mono")?.textContent ?? null),
+    problem: () => page.evaluate(() => document.querySelector(".notice").textContent || null),
+    /** Waits for a message containing `text` to be on the message line. */
+    told: (text) => page.waitForFunction((part) => document.querySelector(".notice").textContent.includes(part), {}, text),
+    /** Top and bottom of the grid, in the window. */
+    gridBox: () => page.$eval(".grid", (el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom })),
     /** Which cell has keyboard focus: "habit date", or "day date" for a day header. */
     focused: () =>
       page.evaluate(() => {

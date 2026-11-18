@@ -39,6 +39,10 @@ const state = {
   keyStored: false,
   /** When set, data_write fails with this message, as a full disk would. */
   writeError: null as string | null,
+  /** Paths data_read fails for, and the message it fails with, as the shell does for a file that isn't text. */
+  readErrors: new Map<string, string>(),
+  /** When set, data_list fails with this message. */
+  listError: null as string | null,
   /** Every command the app has called, in order. */
   calls: [] as string[],
 };
@@ -64,13 +68,18 @@ mockIPC((command, payload) => {
       return (state.root = SUGGESTED_ROOT);
     case "choose_data_root":
       return (state.root = PICKED_ROOT);
-    case "data_read":
-      return files.get(checked(args.path)) ?? null;
+    case "data_read": {
+      const path = checked(args.path);
+      const unreadable = state.readErrors.get(path);
+      if (unreadable !== undefined) throw unreadable;
+      return files.get(path) ?? null;
+    }
     case "data_write":
       if (state.writeError) throw state.writeError;
       files.set(checked(args.path), String(args.contents));
       return null;
     case "data_list": {
+      if (state.listError) throw state.listError;
       const prefix = `${checked(args.dir)}/`;
       return [...files.keys()]
         .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
@@ -91,12 +100,15 @@ mockIPC((command, payload) => {
   }
 });
 
-/** For scenarios: read the mock folder back, plant files in it, make writes fail. */
+/** For scenarios: read the mock folder back, plant files in it, make writes and reads fail. */
 const harness = {
   read: (path: string) => files.get(path) ?? null,
   write: (path: string, text: string) => void files.set(path, text),
   paths: () => [...files.keys()].sort(),
   failWrites: (message: string | null) => void (state.writeError = message),
+  failList: (message: string | null) => void (state.listError = message),
+  failRead: (path: string, message: string | null) =>
+    void (message === null ? state.readErrors.delete(path) : state.readErrors.set(path, message)),
   calls: () => [...state.calls],
 };
 (window as unknown as { wetware: typeof harness }).wetware = harness;
