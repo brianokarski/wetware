@@ -711,6 +711,32 @@ const scenarios = [
     },
   },
   {
+    name: "hung-write",
+    about: "a write the shell never answers is given up on after 30 seconds, said, and holds up nothing else",
+    async run(t) {
+      // Slow: this scenario waits out the real time limit.
+      const path = "days/2026-11-16.md";
+      const before = await t.file(path);
+      await t.page.evaluate((p) => window.wetware.slowWrite(p, 10 * 60 * 1000), path);
+      await t.click("meditate", 16);
+      assert.equal(await t.state("meditate", 16), "missed");
+      // Another day is not behind it.
+      await t.click("meditate", 17);
+      await t.saved();
+      assert.match(await t.file(TODAY_FILE), /^meditate: true$/m);
+      await t.page.waitForFunction(() => document.querySelector(".notice").textContent.includes("after 30 seconds"), { timeout: 45_000 });
+      assert.equal(await t.problem(), "Meditate on November 16 was not saved. No answer from the data folder for days/2026-11-16.md after 30 seconds");
+      // The box goes back to what the file holds, and the month can be left and come back to.
+      await t.page.waitForFunction((selector) => document.querySelector(selector).dataset.state === "done", {}, '.grid-cell[data-habit="meditate"][data-date="2026-11-16"]');
+      assert.equal(await t.file(path), before);
+      await t.reload();
+      assert.equal(await t.text("h1"), "November");
+      assert.equal(await t.state("meditate", 16), "done");
+      assert.equal(await t.state("meditate", 17), "done");
+      assert.equal(await t.countText("meditate"), "10/30");
+    },
+  },
+  {
     name: "broken-day",
     about: "a day file that needs fixing by hand is flagged and can't be changed",
     async run(t) {
