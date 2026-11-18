@@ -136,26 +136,33 @@ describe("a sync of the fixture folder", () => {
 
   it("keeps a value entered by hand while the sync was under way", async () => {
     const inner = folderFs();
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const fs: DataFs = {
-      read: async (p) => (await wait(2), inner.read(p)),
-      write: async (p, text) => (await wait(2), inner.write(p, text)),
-      list: (dir) => inner.list(dir),
-    };
-    const habits = await loadHabits(fs);
+    const habits = await loadHabits(inner);
     const sleep = habits.find((h) => h.id === "sleep")!;
-    const settings = await loadSettings(fs);
-    const syncing = runSync({ fs, sources: fakeSources(), habits, settings, now: NOW });
-    // While the sync is fetching and working through the earlier days, the user corrects two nights.
-    const edits = Promise.all([writeCell(fs, sleep, "2026-10-26", 4), wait(30).then(() => writeCell(fs, sleep, "2026-11-17", 6))]);
-    await Promise.all([syncing, edits]);
-    for (const date of ["2026-10-26", "2026-11-17"]) {
+    // The user corrects a night at the very moment the sync opens that day's file, and another just before.
+    const edits: Promise<unknown>[] = [];
+    let opened = false;
+    const fs: DataFs = {
+      ...inner,
+      read(file) {
+        if (file === path("2026-10-26") && !opened) {
+          opened = true;
+          edits.push(writeCell(fs, sleep, "2026-10-26", 4));
+        }
+        return inner.read(file);
+      },
+    };
+    edits.push(writeCell(fs, sleep, "2026-11-16", 5));
+    const report = await runSync({ fs, sources: fakeSources(), habits, settings: await loadSettings(inner), now: NOW });
+    await Promise.all(edits);
+    expect(edits).toHaveLength(2);
+    expect(report.changed).toContain("2026-10-26");
+    for (const [date, hours] of [["2026-10-26", 4], ["2026-11-16", 5]] as const) {
       const day = await readDay(inner, date);
+      expect(day.values.sleep_h, date).toBe(hours);
       expect(day.sources.sleep_h, date).toBe("manual");
-      expect(day.values.weather_condition, date).toBe(date === "2026-10-26" ? "cloudy" : "rain");
+      // The rest of what the sync had for the day is there too.
+      expect(day.sources.weather_precip_in, date).toBe("open-meteo");
     }
-    expect((await readDay(inner, "2026-10-26")).values.sleep_h).toBe(4);
-    expect((await readDay(inner, "2026-11-17")).values.sleep_h).toBe(6);
   });
 
   it("leaves Lift and Climb as they are until they name an activity type", async () => {
