@@ -80,8 +80,9 @@ describe("intervals.icu activities", () => {
   });
 
   it("count the ones that came through Strava and leave them out", () => {
-    const { activities, withheld } = readActivities(activitiesJson());
+    const { activities, withheld, unreadableDays } = readActivities(activitiesJson());
     expect(withheld).toBe(2);
+    expect([...unreadableDays].sort()).toEqual(["2026-11-08", "2026-11-12"]);
     // The Strava stub is the only thing on the 8th; a run is on the 12th beside the other.
     expect(activities.has("2026-11-08")).toBe(false);
     expect(activities.get("2026-11-12")!.map((a) => a.type)).toEqual(["Run"]);
@@ -93,12 +94,12 @@ describe("intervals.icu activities", () => {
       { id: "3", start_date_local: "2026-11-17T08:00:00", type: "  " },
       { id: "4", start_date_local: "2026-11-17T09:00:00", type: null },
     ];
-    expect(readActivities(stubs)).toEqual({ activities: new Map(), withheld: 5 });
+    expect(readActivities(stubs)).toEqual({ activities: new Map(), withheld: 5, unreadableDays: new Set(["2026-11-17"]) });
   });
 
   it("leave out what has no day to belong to, and refuse a response that isn't a list", () => {
     const odd = [{ type: "Run" }, { type: "Run", start_date_local: "yesterday" }, { type: "Run", start_date_local: "2026-02-30T06:00:00" }, { type: "Run", start_date_local: 20261117 }, null, 7, "Run"];
-    expect(readActivities(odd)).toEqual({ activities: new Map(), withheld: 0 });
+    expect(readActivities(odd)).toEqual({ activities: new Map(), withheld: 0, unreadableDays: new Set() });
     for (const notAList of [null, undefined, {}, { type: "Run" }, "[]"]) {
       expect(() => readActivities(notAList)).toThrow(SourceShapeError);
     }

@@ -137,9 +137,11 @@ function inHabitUnit(field: string, value: number, habit: Habit): number | null 
  *
  * A wellness field that is missing that day is left out, so the cell reads
  * "no data". An activity habit is `true` on a day with a matching activity.
- * It is `false` only on a day the source shows signs of life: some activity
- * that can be read, or a wellness record with something a device measured.
- * On a day with neither, nothing is said, and the cell reads "no data".
+ * It is `false` only on a day the source shows signs of life (some activity
+ * that can be read, or a wellness record with something a device measured)
+ * and everything done that day can be read. On a day with no sign of life,
+ * or with an activity that came through Strava and so might have been the
+ * very thing, nothing is said, and the cell reads "no data".
  */
 export function intervalsWants(habits: Habit[], data: IntervalsData, range: SyncRange): Wants {
   const rules = habits.map(activityRule).filter((rule): rule is ActivityRule => rule !== null);
@@ -167,13 +169,14 @@ export function intervalsWants(habits: Habit[], data: IntervalsData, range: Sync
     }
 
     const alive = activities.length > 0 || (record !== undefined && hasDeviceData(record));
+    const allKnown = !data.unreadableDays.has(date);
     for (const { habit, types, minMinutes } of rules) {
       const done = activities.some(
         (activity) =>
           types.includes(activity.type.toLowerCase()) &&
           (minMinutes === 0 || (activity.minutes !== null && activity.minutes >= minMinutes)),
       );
-      if (done || alive) say(dayKey(habit), done);
+      if (done || (alive && allKnown)) say(dayKey(habit), done);
     }
     if (found.length > 0) wants.set(date, found);
   }

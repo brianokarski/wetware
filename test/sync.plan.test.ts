@@ -75,6 +75,19 @@ describe("activity habits", () => {
     expect(said([run], oneDay(null, [stub, { type: "Run" }]))).toEqual({ run: true });
   });
 
+  it("don't say no on a day with an activity that can't be read: it might have been the run", () => {
+    const stub = { source: "STRAVA", _note: "STRAVA activities are not available via the API" };
+    const lift = habit({ id: "lift", type: "check", source: "intervals", source_rule: { activity_types: ["WeightTraining"] } });
+    // The watch was on all day and there is a strength session, but the other thing done that day is a blank.
+    expect(said([run, lift], oneDay({ steps: 9000, restingHR: 50 }, [stub, { type: "WeightTraining" }]))).toEqual({ lift: true, resting_hr: 50 });
+    expect(said([run, lift], oneDay({ steps: 9000 }, [stub]))).toEqual({});
+    // Without the stub, the same day does say no.
+    expect(said([run, lift], oneDay({ steps: 9000 }, [{ type: "WeightTraining" }]))).toEqual({ run: false, lift: true });
+    // A stub on another day says nothing about this one.
+    const data = oneDay({ steps: 9000 }, [{ ...stub, start_date_local: "2026-11-16T06:00:00" }]);
+    expect(said([run], data)).toEqual({ run: false });
+  });
+
   it("are left alone until they name an activity type", () => {
     const unset = [
       habit({ id: "lift", type: "check", source: "intervals", source_rule: { activity_types: [], min_minutes: 0 } }),

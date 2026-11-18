@@ -27,6 +27,8 @@ export interface IntervalsData {
   activities: Map<string, Activity[]>;
   /** Activities sent as stubs with no detail: the ones that reached intervals.icu through Strava. */
   withheld: number;
+  /** The days that have such a stub: something was done that day, and there is no saying what. */
+  unreadableDays: Set<string>;
 }
 
 /**
@@ -86,28 +88,30 @@ const seconds = (value: unknown) => (typeof value === "number" && Number.isFinit
 /**
  * `GET /athlete/0/activities`: a list of activities. One that came through
  * Strava is sent as a stub (an id, a start time, `source: STRAVA` and a
- * note) with no type or duration. Stubs are counted and otherwise left out:
- * there is no saying what they were.
+ * note) with no type or duration. Stubs are counted and their days noted,
+ * and they are otherwise left out: there is no saying what they were.
  */
-export function readActivities(raw: unknown): Pick<IntervalsData, "activities" | "withheld"> {
+export function readActivities(raw: unknown): Pick<IntervalsData, "activities" | "withheld" | "unreadableDays"> {
   if (!Array.isArray(raw)) throw new SourceShapeError("the activities were not a list");
   const activities = new Map<string, Activity[]>();
+  const unreadableDays = new Set<string>();
   let withheld = 0;
   for (const item of raw) {
     if (!isDict(item)) continue;
     const type = typeof item.type === "string" ? item.type.trim() : "";
+    const date = localDay(item.start_date_local);
     if (item.source === "STRAVA" || type === "") {
       withheld++;
+      if (date !== null) unreadableDays.add(date);
       continue;
     }
-    const date = localDay(item.start_date_local);
     if (date === null) continue;
     // How long it ran: the longer of the time on the clock and the time moving, since lifting and climbing barely "move".
     const lengths = [seconds(item.elapsed_time), seconds(item.moving_time)].filter((s): s is number => s !== null);
     const minutes = lengths.length > 0 ? Math.max(...lengths) / 60 : null;
     activities.set(date, [...(activities.get(date) ?? []), { date, type, minutes }]);
   }
-  return { activities, withheld };
+  return { activities, withheld, unreadableDays };
 }
 
 export interface ActivitySummary {
