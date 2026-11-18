@@ -8,16 +8,20 @@
  * as the user wrote it.
  *
  * Each operation is tried from least to most invasive:
- *   1. edit in place (swap a scalar's text, insert a line, remove lines);
- *   2. re-serialise the one entry the path points into;
- *   3. re-serialise the entry that contains it, and so on outwards.
+ *   1. edit in place: swap a scalar's text, insert or remove a line, or add
+ *      or remove an item between the brackets of a `{…}` or `[…]`;
+ *   2. re-serialise the one entry the path names;
+ *   3. in two cases only, re-serialise the entry that holds it: when that
+ *      entry has no usable value to add to, or when it is written in flow
+ *      style. The siblings inside a flow entry are re-rendered then.
+ * A block map or list is never re-serialised to change one of its entries.
  * A candidate is only accepted if parsing it gives exactly the data the
  * operation should produce. If nothing qualifies the patch throws, so a file
  * is left alone rather than damaged.
  */
 import {
   Document, isAlias, isCollection, isMap, isNode, isScalar, isSeq, Pair, parseDocument,
-  Scalar, YAMLMap, YAMLSeq,
+  Scalar, visit, YAMLMap, YAMLSeq,
   type Node,
 } from "yaml";
 
@@ -280,20 +284,24 @@ interface Entry {
   start: number;
   /** Just after the `:` or the `-`. Null if the source has no such marker. */
   marker: number | null;
+  /** Where the key ends. For a list item, where the item starts. */
+  keyEnd: number;
 }
 
-const WHITESPACE = new Set(["space", "newline", "comment"]);
+/** Tokens that can sit in front of an entry without being part of it. */
+const LEAD_IN = new Set(["space", "newline", "comment", "comma"]);
 
 function pairEntry(parent: YAMLMap, pair: Pair): Entry | null {
   if (!isNode(pair.key) || !pair.key.range) return null;
   const src = (pair as { srcToken?: { start?: Token[]; sep?: Token[] } }).srcToken;
-  const lead = src?.start?.find((t) => !WHITESPACE.has(t.type));
+  const lead = src?.start?.find((t) => !LEAD_IN.has(t.type));
   const colon = tokenOffset(src?.sep, "map-value-ind");
   return {
     parent,
     value: isNode(pair.value) ? pair.value : null,
     start: Math.min(lead?.offset ?? pair.key.range[0], pair.key.range[0]),
     marker: colon === null ? null : colon + 1,
+    keyEnd: pair.key.range[1],
   };
 }
 
@@ -318,9 +326,17 @@ function itemEntry(parent: YAMLSeq, index: number): Entry | null {
   const dash = dashes(parent)?.[index] ?? null;
   if (dash === null) {
     if (!value?.range) return null;
-    return { parent, value, start: value.range[0], marker: null };
+    return { parent, value, start: value.range[0], marker: null, keyEnd: value.range[0] };
   }
-  return { parent, value, start: dash, marker: dash + 1 };
+  return { parent, value, start: dash, marker: dash + 1, keyEnd: dash };
+}
+
+/** Every entry of a collection, or null if one of them can't be found in the source. */
+function entriesOf(node: YAMLMap | YAMLSeq): Entry[] | null {
+  const entries = isMap(node)
+    ? node.items.map((pair) => pairEntry(node, pair))
+    : node.items.map((_, i) => itemEntry(node, i));
+  return entries.every((e): e is Entry => e !== null) ? entries : null;
 }
 
 /** Follows `path` through the source as far as it exists. */
@@ -345,12 +361,22 @@ function locate(doc: Document.Parsed, path: YamlPath): Entry[] {
 /** No content yet, though there may be comments or a `---` line. */
 function isEmptyDocument(doc: Document.Parsed): boolean {
   const root: unknown = doc.contents;
-  if (root === null) return true;
-  return isScalar(root) && root.value === null && !!root.range && root.range[0] === root.range[1];
+  return root === null || isBlank(root);
 }
 
+/** A value that was left out: `key:` with nothing after it. */
+function isBlank(node: unknown): boolean {
+  return isScalar(node) && node.value === null && !!node.range && node.range[0] === node.range[1];
+}
+
+/** A map or list written out over lines, with something in it. */
 function isBlock(node: unknown): node is YAMLMap | YAMLSeq {
   return isCollection(node) && !node.flow && node.items.length > 0;
+}
+
+/** A `{…}` map or `[…]` list with something in it. */
+function isFlow(node: unknown): node is YAMLMap | YAMLSeq {
+  return isCollection(node) && node.flow === true && node.items.length > 0;
 }
 
 /** The last entry of a block map or list, if it can be found in the source. */
@@ -372,6 +398,11 @@ function entryEnd(text: string, entry: Entry): number {
   return lineEnd(text, pos);
 }
 
+/** Where an entry's own text stops, for one that sits inside a flow collection. */
+function flowEnd(entry: Entry): number {
+  return Math.max(entry.value?.range?.[1] ?? 0, entry.marker ?? 0, entry.keyEnd);
+}
+
 /** True when nothing but indentation sits before the entry on its line. */
 function ownsLine(text: string, entry: Entry): boolean {
   return /^ *$/.test(text.slice(lineStart(text, entry.start), entry.start));
@@ -379,23 +410,50 @@ function ownsLine(text: string, entry: Entry): boolean {
 
 const column = (text: string, pos: number) => pos - lineStart(text, pos);
 
+function holder(key: string | null, node: unknown): YAMLMap | YAMLSeq {
+  if (key === null) {
+    const seq = new YAMLSeq();
+    seq.items.push(node);
+    return seq;
+  }
+  const map = new YAMLMap();
+  map.items.push(new Pair(new Scalar(key), node));
+  return map;
+}
+
+/** Text with line breaks would come out as a block, which can't sit between brackets: quote it instead. */
+function quoteMultiline(node: Node): void {
+  visit(node, {
+    Scalar(_, scalar) {
+      if (typeof scalar.value === "string" && scalar.value.includes("\n")) scalar.type = "QUOTE_DOUBLE";
+    },
+  });
+}
+
 /** YAML source lines for one `key: value` pair or one `- item`, at column 0. */
 function renderLines(key: string | null, value: unknown, flow: boolean): string[] {
   const doc = new Document();
   const node = doc.createNode(value);
-  if (flow && isCollection(node)) node.flow = true;
-  if (key === null) {
-    const seq = new YAMLSeq();
-    seq.items.push(node);
-    doc.contents = seq;
-  } else {
-    const map = new YAMLMap();
-    map.items.push(new Pair(new Scalar(key), node));
-    doc.contents = map;
+  if (flow && isCollection(node)) {
+    node.flow = true;
+    quoteMultiline(node);
   }
+  doc.contents = holder(key, node);
   const lines = doc.toString(YAML_OUT).split("\n");
   lines.pop();
   return lines;
+}
+
+/** `key: value`, or a bare value, as it is written inside `{…}` or `[…]`. Null if it needs more than a line. */
+function flowText(key: string | null, value: unknown): string | null {
+  const doc = new Document();
+  const node = doc.createNode(value);
+  quoteMultiline(node);
+  const outer = holder(key, node);
+  outer.flow = true;
+  doc.contents = outer;
+  const text = doc.toString(YAML_OUT).replace(/\n$/, "");
+  return text.includes("\n") ? null : text.slice(1, -1);
 }
 
 /** The text for a scalar where it can stand in for another on the same line, else null. */
@@ -403,6 +461,15 @@ function scalarText(value: unknown): string | null {
   if (value !== null && typeof value === "object") return null;
   const text = new Document(value).toString(YAML_OUT).replace(/\n$/, "");
   return text.includes("\n") ? null : text;
+}
+
+/** Swaps the value of an entry that sits between brackets, whatever the old and new values are. */
+function* replaceInFlow(text: string, entry: Entry, value: unknown): Generator<string> {
+  const replacement = flowText(null, value);
+  if (replacement === null) return;
+  const range = entry.value?.range;
+  if (range && range[0] < range[1]) yield splice(text, range[0], range[1], replacement);
+  else if (entry.marker !== null) yield splice(text, entry.marker, entry.marker, " " + replacement);
 }
 
 function indentLines(lines: string[], indent: number, eol: Eol, skipFirst = false): string {
@@ -416,82 +483,158 @@ function insertLines(text: string, at: number, block: string, eol: Eol): string 
   return splice(text, at, at, midLine ? eol + block : block + eol);
 }
 
-/** Rewrites one entry's value, keeping its key (or dash) and everything outside it. */
-function rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol): string | null {
-  if (entry.marker === null || entry.parent.flow) return null;
-  const flow = isCollection(entry.value) && entry.value.flow === true;
+/**
+ * Rewrites one entry's value, keeping its key (or dash) and everything
+ * outside the entry. A comment on the value's own line is kept if the result
+ * still parses with it there; a `{…}` or `[…]` value stays in that style.
+ */
+function* rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol): Generator<string> {
+  if (entry.marker === null || entry.parent.flow) return;
+  const old = entry.value;
   const asPair = isMap(entry.parent);
-  const lines = renderLines(asPair ? "k" : null, value, flow);
+  const lines = renderLines(asPair ? "k" : null, value, isFlow(old));
   // Drop the stand-in key (or the dash): the original stays in the file.
   lines[0] = lines[0].slice(asPair ? 2 : 1);
   const end = entryEnd(text, entry);
-  const keepBreak = text.slice(entry.marker, end).endsWith("\n");
-  const block = indentLines(lines, column(text, entry.start), eol, true) + (keepBreak ? eol : "");
-  return splice(text, entry.marker, end, block);
+  const breakAfter = text.slice(entry.marker, end).endsWith("\n") ? eol : "";
+  const write = (afterFirstLine: string) => {
+    const withTail = [lines[0] + afterFirstLine, ...lines.slice(1)];
+    return splice(text, entry.marker!, end, indentLines(withTail, column(text, entry.start), eol, true) + breakAfter);
+  };
+
+  if (old?.range && !isBlock(old) && !(isScalar(old) && isBlockScalar(old))) {
+    const valueEnd = isBlank(old) ? entry.marker : Math.max(old.range[1], entry.marker);
+    const tail = text.slice(valueEnd, lineEnd(text, valueEnd)).replace(/\r?\n$/, "");
+    if (/^[ \t]+#/.test(tail)) yield write(tail);
+  }
+  yield write("");
 }
 
-function* candidates(
-  { text, doc }: Parsed,
-  op: YamlOp,
-  model: unknown,
-  eol: Eol,
-): Generator<string | null> {
+const isBlockScalar = (node: Scalar) => node.type === "BLOCK_LITERAL" || node.type === "BLOCK_FOLDED";
+
+/** Index of the sibling a new key goes in front of, or the number of siblings if it goes last. */
+function insertIndex(op: YamlOp, parent: YAMLMap): number {
+  if (op.op === "set" && op.first) return 0;
+  if (op.op === "set" && op.before) {
+    const before = op.before;
+    const i = parent.items.findIndex((p) => isScalar(p.key) && before.includes(String(p.key.value)));
+    if (i >= 0) return i;
+  }
+  return parent.items.length;
+}
+
+/** Removes entry `index` from a flow collection, along with the comma that goes with it. */
+function removeFromFlow(text: string, entries: Entry[], index: number): string {
+  const entry = entries[index];
+  if (index < entries.length - 1) return splice(text, entry.start, entries[index + 1].start, "");
+  if (index > 0) return splice(text, flowEnd(entries[index - 1]), flowEnd(entry), "");
+  return splice(text, entry.start, flowEnd(entry), "");
+}
+
+/**
+ * The texts to try for one operation, least invasive first. `model` is what
+ * the document should mean afterwards.
+ *
+ * What may change is the named entry and nothing else. There are two
+ * exceptions, both limited to the one entry that holds the named one:
+ *   - it has no usable value to add to (it is empty, or a plain value where a
+ *     map or list is needed): it gets a fresh value;
+ *   - it is written in flow style (`{…}` or `[…]`) and couldn't be edited
+ *     within its brackets: it is written out again, still in flow style.
+ * A block map or list is never written out again to change one of its entries.
+ */
+function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol): Generator<string> {
   const { path } = op;
   const found = locate(doc, path);
   const target = found.length === path.length ? found[found.length - 1] : null;
-  const inFlow = found.some((e) => e.parent.flow);
-  // Entries that may be re-serialised if editing in place isn't possible.
-  let fallbackFrom = found.length - 1;
+  const at = (depth: number) => valueAt(model, path.slice(0, depth + 1));
 
   if (op.op === "delete") {
     // The model said this exists, so `target` is set unless it came through an alias or merge.
-    if (target && !inFlow && ownsLine(text, target)) {
+    if (!target) return;
+    const siblings = entriesOf(target.parent);
+    const index = siblings?.findIndex((e) => e.start === target.start) ?? -1;
+    if (target.parent.flow) {
+      if (siblings && index >= 0) yield removeFromFlow(text, siblings, index);
+    } else if (ownsLine(text, target)) {
       yield splice(text, lineStart(text, target.start), entryEnd(text, target), "");
+    } else if (siblings && index === 0) {
+      // The first key of a list item shares the dash's line.
+      const end = entryEnd(text, target);
+      const next = siblings.length > 1 ? siblings[1] : null;
+      const item = found.length > 1 ? found[found.length - 2] : null;
+      if (next && text.slice(end, next.start).trim() === "") {
+        // The next key moves up to the dash.
+        yield splice(text, target.start, next.start, "");
+      } else if (item && item.marker !== null) {
+        // Nothing can move up (no other key, or a comment is in the way): the dash is left on its own line.
+        const lineBreak = /\r?\n$/.exec(text.slice(0, end))?.[0] ?? "";
+        yield splice(text, item.marker, end - lineBreak.length, "");
+      }
     }
-    fallbackFrom = path.length - 2;
   } else if (!target) {
-    // New entry: one or more new lines in the deepest map that exists.
+    // Something new: `key` goes into `parent`, the deepest collection that exists.
     const depth = found.length;
     const key = path[depth];
-    const parent = depth === 0 ? doc.contents : found[depth - 1].value;
-    const value = valueAt(model, path.slice(0, depth + 1));
+    const parent: unknown = depth === 0 ? doc.contents : found[depth - 1].value;
+    const value = at(depth);
     if (typeof key === "string" && isMap(parent) && isBlock(parent)) {
-      const siblings = parent.items.map((pair) => pairEntry(parent, pair));
-      if (siblings.every((e): e is Entry => e !== null)) {
-        let index = siblings.length;
-        if (op.op === "set" && op.first) index = 0;
-        else if (op.op === "set" && op.before) {
-          const before = op.before;
-          const i = parent.items.findIndex((p) => isScalar(p.key) && before.includes(String(p.key.value)));
-          if (i >= 0) index = i;
-        }
+      const siblings = entriesOf(parent);
+      if (siblings) {
+        const index = insertIndex(op, parent);
         const first = siblings[0];
         const block = indentLines(renderLines(key, value, false), column(text, first.start), eol);
         if (index > 0) yield insertLines(text, entryEnd(text, siblings[index - 1]), block, eol);
         else if (ownsLine(text, first)) yield insertLines(text, lineStart(text, first.start), block, eol);
         else yield insertLines(text, entryEnd(text, siblings[siblings.length - 1]), block, eol);
       }
-    } else if (depth === 0 && typeof key === "string" && isEmptyDocument(doc)) {
-      yield insertLines(text, text.length, renderLines(key, value, false).join(eol), eol);
+    } else if (typeof key === "string" && isMap(parent) && isFlow(parent)) {
+      const siblings = entriesOf(parent);
+      const pair = flowText(key, value);
+      if (siblings && pair !== null) {
+        const index = insertIndex(op, parent);
+        if (index < siblings.length) yield splice(text, siblings[index].start, siblings[index].start, `${pair}, `);
+        else yield splice(text, flowEnd(siblings[index - 1]), flowEnd(siblings[index - 1]), `, ${pair}`);
+      }
+    } else if (depth === 0) {
+      if (typeof key === "string" && isEmptyDocument(doc)) {
+        yield insertLines(text, text.length, renderLines(key, value, false).join(eol), eol);
+      } else if (isCollection(parent) && parent.flow && parent.items.length === 0 && parent.range && isDict(model)) {
+        // A document that is just `{}`.
+        const fresh = new Document(model).toString(YAML_OUT).replace(/\n$/, "").split("\n").join(eol);
+        yield splice(text, parent.range[0], parent.range[1], fresh);
+      }
+    } else if (!isBlock(parent)) {
+      // Empty, a plain value, or the wrong kind of flow collection: nothing to add to, so it is replaced.
+      if (found[depth - 1].parent.flow) yield* replaceInFlow(text, found[depth - 1], at(depth - 1));
+      else yield* rewriteEntry(text, found[depth - 1], at(depth - 1), eol);
     }
   } else if (op.op === "append") {
     const list = target.value;
+    const items = isSeq(list) ? entriesOf(list) : null;
     if (isSeq(list) && isBlock(list)) {
-      const first = itemEntry(list, 0);
-      const last = itemEntry(list, list.items.length - 1);
-      if (first?.marker && last?.marker) {
-        const block = indentLines(renderLines(null, plain(op.value), false), column(text, first.start), eol);
-        yield insertLines(text, entryEnd(text, last), block, eol);
+      if (items?.every((e) => e.marker !== null)) {
+        const block = indentLines(renderLines(null, plain(op.value), false), column(text, items[0].start), eol);
+        yield insertLines(text, entryEnd(text, items[items.length - 1]), block, eol);
       }
+    } else {
+      const item = flowText(null, plain(op.value));
+      if (isFlow(list) && items && item !== null) {
+        const end = flowEnd(items[items.length - 1]);
+        yield splice(text, end, end, `, ${item}`);
+      }
+      // An empty list, `[]` included, is written out as a block list.
+      yield* rewriteEntry(text, target, at(path.length - 1), eol);
     }
+  } else if (target.parent.flow) {
+    yield* replaceInFlow(text, target, plain(op.value));
   } else {
     // Existing entry: swap the scalar's own text when both old and new are simple.
-    const value = plain(op.value);
     const node = target.value;
-    const replacement = inFlow && typeof value === "string" ? null : scalarText(value);
+    const replacement = scalarText(plain(op.value));
     if (replacement !== null && node?.range) {
       const [from, to] = node.range;
-      const inline = isScalar(node) && node.type !== "BLOCK_LITERAL" && node.type !== "BLOCK_FOLDED";
+      const inline = isScalar(node) && !isBlockScalar(node);
       if (isAlias(node) || (inline && from < to)) {
         yield splice(text, from, to, replacement);
       } else if (inline && target.marker !== null && isMap(target.parent)) {
@@ -499,18 +642,12 @@ function* candidates(
         yield splice(text, target.marker, target.marker, " " + replacement);
       }
     }
+    yield* rewriteEntry(text, target, at(path.length - 1), eol);
   }
 
-  for (let depth = Math.min(fallbackFrom, found.length - 1); depth >= 0; depth--) {
-    yield rewriteEntry(text, found[depth], valueAt(model, path.slice(0, depth + 1)), eol);
-  }
-
-  // A one-line `{}` or `[]` document can be rewritten whole; a block document never is.
-  const root = doc.contents;
-  if (isCollection(root) && root.flow && root.range && isDict(model)) {
-    const fresh = new Document(model).toString(YAML_OUT).replace(/\n$/, "").split("\n").join(eol);
-    yield splice(text, root.range[0], root.range[1], fresh);
-  }
+  // Inside `{…}` or `[…]` and not editable there: write out the entry that holds the brackets.
+  const outer = found.findIndex((entry, depth) => depth < path.length - 1 && isFlow(entry.value));
+  if (outer >= 0) yield* rewriteEntry(text, found[outer], at(outer), eol);
 }
 
 function tryParse(text: string): Parsed | null {
@@ -541,7 +678,6 @@ export function patchYaml(
     if (answers === null) continue;
     let next: Parsed | null = null;
     for (const candidate of candidates(current, op, answers[0], eol)) {
-      if (candidate === null) continue;
       const parsed = tryParse(candidate);
       if (parsed && answers.some((answer) => same(parsed.model, answer))) {
         next = parsed;

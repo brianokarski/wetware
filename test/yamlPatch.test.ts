@@ -168,9 +168,18 @@ describe("nested paths", () => {
     expect(patchYaml(flush, [{ op: "append", path: ["habits"], value: { id: "lift" } }])).toBe(flush + "- id: lift\n");
   });
 
-  it("re-serialises only the list item when its first key is removed", () => {
+  it("removing a list item's first key moves the next key up to the dash", () => {
     expect(patchYaml(habits, [del(["habits", 0, "id"])]))
-      .toBe("# my comment\nhabits:\n  - source: morning_pages\n    goal: 750\n  - id: run\n");
+      .toBe("# my comment\nhabits:\n  - source: morning_pages\n    goal: 750 # words\n  - id: run\n");
+    // Review S-1, second input.
+    expect(patchYaml("habits:\n  - old: x\n    id: run # keep\n    goal: 0x10\n  - id: walk # keep\n", [del(["habits", 0, "old"])]))
+      .toBe("habits:\n  - id: run # keep\n    goal: 0x10\n  - id: walk # keep\n");
+  });
+
+  it("leaves the dash on its own line when nothing can move up to it", () => {
+    expect(patchYaml("habits:\n  - old: x\n    # about id\n    id: run # keep\n", [del(["habits", 0, "old"])]))
+      .toBe("habits:\n  -\n    # about id\n    id: run # keep\n");
+    expect(patchYaml("habits:\n  - id: a # one\n  - id: b\n", [del(["habits", 0, "id"])])).toBe("habits:\n  -\n  - id: b\n");
   });
 
   it("refuses a list index that doesn't exist", () => {
@@ -195,8 +204,25 @@ describe("lists", () => {
     expect(patchYaml("a: 1\n", [{ op: "append", path: ["habits"], value: { id: "c" } }])).toBe("a: 1\nhabits:\n  - id: c\n");
     expect(patchYaml("habits:\na: 1 # c\n", [{ op: "append", path: ["habits"], value: { id: "c" } }]))
       .toBe("habits:\n  - id: c\na: 1 # c\n");
+  });
+
+  it("turns an empty [] into a block list when the first item is added (review N-2)", () => {
     expect(patchYaml("habits: []\na: 1 # c\n", [{ op: "append", path: ["habits"], value: "x" }]))
-      .toBe("habits: [x]\na: 1 # c\n");
+      .toBe("habits:\n  - x\na: 1 # c\n");
+    expect(patchYaml("habits: [] # none yet\n", [
+      { op: "append", path: ["habits"], value: { id: "run", name: "Run" } },
+      { op: "append", path: ["habits"], value: { id: "walk" } },
+    ])).toBe("habits: # none yet\n  - id: run\n    name: Run\n  - id: walk\n");
+    expect(patchYaml("m: {}\nz: 1\n", [set(["m", "a"], 1)])).toBe("m:\n  a: 1\nz: 1\n");
+  });
+
+  it("adds to a [..] list between its brackets", () => {
+    expect(patchYaml("tags: [travel, 0x1F] # trip\nz: 1\n", [{ op: "append", path: ["tags"], value: "sick, tired" }]))
+      .toBe('tags: [travel, 0x1F, "sick, tired"] # trip\nz: 1\n');
+    expect(patchYaml("tags: [travel, 0x1F, sick] # trip\n", [del(["tags", 0])])).toBe("tags: [0x1F, sick] # trip\n");
+    expect(patchYaml("tags: [travel, 0x1F, sick] # trip\n", [del(["tags", 2])])).toBe("tags: [travel, 0x1F] # trip\n");
+    expect(patchYaml("tags: [travel] # trip\n", [del(["tags", 0])])).toBe("tags: [] # trip\n");
+    expect(patchYaml("tags: [travel, 0x1F] # trip\n", [set(["tags", 0], "a: b")])).toBe('tags: ["a: b", 0x1F] # trip\n');
   });
 
   it("refuses to append to something that isn't a list", () => {
@@ -219,6 +245,59 @@ describe("line endings", () => {
   });
 });
 
+describe("review S-1: an edit never re-renders the entries beside it", () => {
+  it("refuses to change a value whose anchor another entry uses", () => {
+    const src = '# my habits\nhabits:\n  - id: run # first\n    color: &green "#3A7D44"\n    goal: 0x10\n\n  # walking\n  - id: walk\n    color: *green # same\n    order: 1.50\n';
+    expect(() => patchYaml(src, [set(["habits", 0, "color"], "#000000")])).toThrow(YamlPatchError);
+    // The entry that only refers to the anchor can be changed; so can everything else.
+    expect(patchYaml(src, [set(["habits", 1, "color"], "#000000"), set(["habits", 0, "goal"], 20)]))
+      .toBe(src.replace("*green", '"#000000"').replace("0x10", "20"));
+  });
+
+  it("edits a flow-style list item between its braces", () => {
+    const src = "habits:\n  - {id: a, name: A, goal: 0x10} # keep\n  - {id: b} # b\n";
+    expect(patchYaml(src, [set(["habits", 0, "name"], "Aye")])).toBe(src.replace("name: A", "name: Aye"));
+    expect(patchYaml(src, [set(["habits", 0, "archived"], true)])).toBe(src.replace("0x10}", "0x10, archived: true}"));
+    expect(patchYaml(src, [del(["habits", 0, "name"])])).toBe(src.replace("name: A, ", ""));
+    expect(patchYaml(src, [set(["habits", 1, "name"], "Bee, or B")])).toBe(src.replace("{id: b}", '{id: b, name: "Bee, or B"}'));
+  });
+
+  it("edits a document that is one flow map between its braces", () => {
+    const src = "{mood: 3, weight_lb: 171.20, hex: 0x1F}\n";
+    expect(patchYaml(src, [set(["run"], true)])).toBe("{mood: 3, weight_lb: 171.20, hex: 0x1F, run: true}\n");
+    expect(patchYaml(src, [set(["mood"], 4)])).toBe("{mood: 4, weight_lb: 171.20, hex: 0x1F}\n");
+    expect(patchYaml(src, [set(["date"], "2026-11-17", { first: true })]))
+      .toBe("{date: 2026-11-17, mood: 3, weight_lb: 171.20, hex: 0x1F}\n");
+    expect(patchYaml(src, [set(["run"], true, { before: ["hex"] })])).toBe("{mood: 3, weight_lb: 171.20, run: true, hex: 0x1F}\n");
+    expect(patchYaml(src, [del(["weight_lb"])])).toBe("{mood: 3, hex: 0x1F}\n");
+    expect(patchYaml(src, [del(["hex"])])).toBe("{mood: 3, weight_lb: 171.20}\n");
+  });
+
+  it("never writes a block map or list out again to change one of its entries", () => {
+    // A block list where a map is needed: replacing it would discard what the user wrote.
+    expect(() => patchYaml("a: 0x1F\n_sources:\n  - x # c\n", [set(["_sources", "mood"], "manual")])).toThrow(YamlPatchError);
+    // A multi-line value that would swallow the comment under it.
+    expect(() => patchYaml("m:\n  a: 1\n    # deeper\n  b: 0x1F\n", [set(["m", "a"], "two\nlines")])).toThrow(YamlPatchError);
+  });
+});
+
+describe("review N-1: a comment beside a list or map value stays", () => {
+  it("when the whole value is replaced", () => {
+    expect(patchYaml("tags: [travel] # trip\nz: 1\n", [set(["tags"], ["travel", "sick"])])).toBe("tags: [travel, sick] # trip\nz: 1\n");
+    expect(patchYaml("tags: [travel] # trip\n", [set(["tags"], [])])).toBe("tags: [] # trip\n");
+    expect(patchYaml("a: 1 # c\nb: 1\n", [set(["a"], { x: 1 })])).toBe("a: # c\n  x: 1\nb: 1\n");
+    expect(patchYaml("note: short # c\n", [set(["note"], "two\nlines")])).toBe("note: |- # c\n  two\n  lines\n");
+    expect(patchYaml("_sources:   # where from\nz: 1\n", [set(["_sources", "mood"], "manual")]))
+      .toBe("_sources:   # where from\n  mood: manual\nz: 1\n");
+  });
+
+  it("when a value inside it changes", () => {
+    const src = "units: {weight: lb, temperature: F} # u\n";
+    expect(patchYaml(src, [set(["units", "weight"], "kg")])).toBe(src.replace("lb", "kg"));
+    expect(patchYaml(src, [set(["units", "sleep"], "h")])).toBe("units: {weight: lb, temperature: F, sleep: h} # u\n");
+  });
+});
+
 describe("entries that can't be edited in place", () => {
   it("replaces an empty or plain-text value with a map, and nothing else", () => {
     expect(patchYaml("a: 0x1F # c\n_sources:\nz: 1 # c\n", [set(["_sources", "mood"], "manual")]))
@@ -237,8 +316,24 @@ describe("entries that can't be edited in place", () => {
     expect(patchYaml(src, [set(["_sources", "run"], 5)])).toBe("a: 0x1F # c\n_sources: {run: 5}\nz: 1 # c\n");
   });
 
-  it("rewrites a document that is one flow map", () => {
+  it("rewrites a document that is an empty flow map", () => {
     expect(patchYaml("{}\n", [set(["a"], 1)])).toBe("a: 1\n");
+    expect(patchYaml("{} # nothing yet\n", [set(["a", "b"], 1)])).toBe("a:\n  b: 1 # nothing yet\n");
+  });
+
+  it("writes a flow entry out again, in flow style, only when it can't be edited between its brackets", () => {
+    // A comment between the braces doesn't stop the in-place edit.
+    expect(patchYaml("a: 0x1F # keep\nm: {x: 1, # first\n  y: 0x10}\nz: 1\n", [del(["m", "x"])]))
+      .toBe("a: 0x1F # keep\nm: {y: 0x10}\nz: 1\n");
+    // A list where a map is needed, inside braces: only that value is swapped.
+    expect(patchYaml("a: 0x1F # keep\nm: {x: 0x10, y: [1, 2]} # m\nz: 1\n", [set(["m", "y", "k"], 1)]))
+      .toBe("a: 0x1F # keep\nm: {x: 0x10, y: {k: 1}} # m\nz: 1\n");
+    expect(patchYaml("m: {x: 0x10, y: [1, 2]} # m\n", [set(["m", "x"], ["a", "two\nlines"])]))
+      .toBe('m: {x: [a, "two\\nlines"], y: [1, 2]} # m\n');
+    // A tag pins the old value's type, so swapping its text can't work: the one entry
+    // holding the braces is written out again, and its other values are re-rendered.
+    expect(patchYaml("a: 0x1F # keep\nm: {x: 0x10, y: !!str 5} # m\nz: 1\n", [set(["m", "y"], 4)]))
+      .toBe("a: 0x1F # keep\nm: {x: 16, y: 4} # m\nz: 1\n");
   });
 });
 

@@ -135,6 +135,32 @@ describe("habit patch operations", () => {
   });
 });
 
+describe("review S-1 and N-2: habits.yaml edge cases", () => {
+  it("refuses a change that would break another habit's alias, leaving the file as it was", async () => {
+    const raw = '# my habits\nhabits:\n  - id: run # first\n    color: &green "#3A7D44"\n    goal: 0x10\n\n  # walking\n  - id: walk\n    color: *green # same\n    order: 1.50\n';
+    const fs = habitsFs(raw);
+    await expect(updateHabit(fs, "run", { color: "#000000" })).rejects.toThrow(YamlPatchError);
+    expect(habitsText(fs)).toBe(raw);
+    await updateHabit(fs, "run", { goal: 20, name: "Run" });
+    expect(habitsText(fs)).toBe(raw.replace("0x10", "20\n    name: Run"));
+  });
+
+  it("edits a habit written between braces without touching the rest of it", async () => {
+    const raw = "habits:\n  - {id: a, name: A, goal: 0x10} # keep\n  - {id: b, order: 1.50} # b\n";
+    const fs = habitsFs(raw);
+    await updateHabit(fs, "a", { name: "Aye" });
+    await archiveHabit(fs, "b");
+    expect(habitsText(fs)).toBe("habits:\n  - {id: a, name: Aye, goal: 0x10} # keep\n  - {id: b, order: 1.50, archived: true} # b\n");
+  });
+
+  it("the first habit added to habits: [] starts a block list", async () => {
+    const fs = habitsFs("# mine\nhabits: []\n");
+    await addHabit(fs, { id: "run", name: "Run", type: "check", color: "#3A7D44" });
+    await addHabit(fs, { id: "walk", name: "Walk" });
+    expect(habitsText(fs)).toBe('# mine\nhabits:\n  - id: run\n    name: Run\n    type: check\n    color: "#3A7D44"\n  - id: walk\n    name: Walk\n');
+  });
+});
+
 describe("N3: habit fields are normalised on read", () => {
   it("ids and names are text, order is a number, booleans are booleans", () => {
     const { habits, skipped } = parseHabitsFile(
