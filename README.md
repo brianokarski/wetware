@@ -55,6 +55,8 @@ npm run shots         # screenshots of the UI into .shots/, with end-to-end chec
 | `src-tauri/` | Rust shell: file access limited to the data folder, folder dialog, Keychain, and the two fetches sync makes (`net.rs`). |
 | `dev/` | The browser preview and the screenshot script. Not part of the app bundle. |
 
+A read or write the shell never answers is given up on after 30 seconds, with a message, so that one stuck file can't hold up the rest.
+
 The shell gives each opening of the data folder a number. Every file command carries the number it was given, and the shell refuses one whose number is stale, so nothing worked out for one folder (a sync, a cell edit) can be written into another.
 
 The data folder's location is kept in the app's own config (`~/Library/Application Support/com.brianokarski.wetware/config.json`), since it can't live inside the folder it points to. So is the time of the last sync. The intervals.icu key can be saved or removed from the UI but is never handed back to it; sync reads it on the Rust side and sends it only to intervals.icu.
@@ -64,10 +66,18 @@ The data folder's location is kept in the app's own config (`~/Library/Applicati
 Click a day's number in the grid (or press Enter on it) to open that day. Escape, or Month, goes back.
 
 - Every habit's value can be edited there, with the same rules as the grid. Each shows where it came from: `manual`, `intervals`, `open-meteo`, or `unrecorded` for a value the file has no `_sources` entry for.
-- A synced habit's value that was set by hand has a "Use synced value" action. It removes the key and its `_sources` entry from the file, and the next sync fills the value in again.
-- Below the habits: what sync logged by itself (HRV, resting heart rate, sleep score, weather), and every other key in the file's frontmatter, read-only. Nothing in the file is out of sight.
-- Notes are the body of the day's file, as plain text; markdown is not rendered. They save a moment after typing stops and when you leave the field or the day. Saving notes writes only the body: the frontmatter is left byte for byte as it is, and a file that had none (plain text) still has none.
+- A value sync is keeping its hands off (set by hand, no source on record, or a source the app doesn't know) has a "Use synced value" action, where a sync could fill it: the habit's rule is set up, and the day is one a sync still covers (the current month and the seven days before it). It removes the key and its `_sources` entry from the file. The next sync then writes what intervals.icu has for that day, and leaves it empty if it has nothing.
+- A habit's key that holds something the habit can't (`weight_lb: 182 lb`, `run: "yes"`) is shown in the habit's row as written, marked not readable. It stays in the file until you enter a value.
+- Below the habits: what sync logged by itself (HRV, resting heart rate, sleep score, weather), and then everything else in the frontmatter, read-only and as written. That is your own keys, archived habits' values, tags no habit shows, `_synced_at`, a `date` that isn't the file's, and `_sources` entries no row shows. Every frontmatter key is shown in one of these places.
+- Notes are the body of the day's file, as plain text; markdown is not rendered. Saving notes writes only the body: the frontmatter is left byte for byte as it is, and a file that had none (plain text) still has none, unless the notes themselves would then read as frontmatter, in which case the file is given a `date` of its own first.
+- Notes save a moment (0.8 s) after typing stops, at least every 3 s while it doesn't, and at once when you leave the field or the day, or the window goes to the background, is hidden or is asked to close.
 - A day whose file can't be read or parsed shows the problem and the file's path, and nothing in it can be changed from the app.
+
+**If the file changes outside the app while the day is open** (in Obsidian, say):
+
+- When the window comes back to the front, the open day is read again. Values follow the file. Notes follow it too, if nothing unsaved is typed here.
+- Notes are only ever saved over the text they were typed from. If the file's notes have changed since, nothing is written. The typing stays in the field, and the app asks: "Keep what is typed here" writes it over the file's text; "Take the file's text" puts the file's text in the field. Until you choose, nothing is saved and the day can't be left.
+- Values don't need the question: each is written as its own key, beside whatever else changed.
 
 ## Sync
 
