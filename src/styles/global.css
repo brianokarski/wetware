@@ -83,14 +83,14 @@ select {
   display: flex;
   flex-direction: column;
   padding: var(--page-margin);
-  gap: var(--space-12);
+  gap: var(--gap-section);
 }
 
 .app-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--space-12);
+  gap: var(--gap-section);
 }
 
 /* Mono metadata row, like the "NR 17 / Spring Summer / 2023" strip. */
@@ -230,4 +230,283 @@ select {
 
 .selectable {
   user-select: text;
+}
+
+/* ── Month grid: a typographic table. Ink rules for days lived, faint ones ahead. ── */
+
+.month {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.month-nav {
+  display: flex;
+  justify-content: flex-end;
+  column-gap: var(--space-4);
+  white-space: nowrap;
+}
+
+.grid {
+  /* Width of one day column. `--days` is set on the table: 28 to 31. */
+  --grid-day: calc(
+    (100vw - 2 * var(--page-margin) - var(--grid-col-habit) - var(--grid-col-count)) / var(--days)
+  );
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-bottom: var(--rule);
+}
+
+.grid-col-habit {
+  width: var(--grid-col-habit);
+}
+
+.grid-col-count {
+  width: var(--grid-col-count);
+}
+
+/* Today: a soft gray wash down the whole column, the one graphic element. */
+.grid-col-today {
+  background: linear-gradient(var(--color-gray-light), var(--color-wash));
+}
+
+/* A day whose file needs fixing by hand: hatched out. What it holds isn't known. */
+.grid-col-unread {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--color-gray-light) 0 var(--rule-weight),
+    transparent var(--rule-weight) var(--space-1)
+  );
+}
+
+.grid th,
+.grid td {
+  height: var(--grid-row);
+  padding: 0;
+  border-top: var(--rule);
+  font-weight: inherit;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.grid thead th {
+  height: var(--grid-head);
+  border-top: none;
+  vertical-align: bottom;
+}
+
+.grid-corner,
+.grid thead .grid-count {
+  padding-bottom: var(--space-1);
+}
+
+/* Day numbers: weekday initial above, number below, both mono. */
+.grid-day-button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  height: var(--grid-head);
+  padding-bottom: var(--space-2);
+  cursor: pointer;
+}
+
+.grid-weekday {
+  color: var(--color-gray);
+}
+
+.grid-day[data-future] .grid-day-button,
+.grid-day[data-future] .grid-weekday {
+  color: var(--color-gray-light);
+}
+
+.grid-day[data-today] .grid-day-button {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+.grid-day[data-today] .grid-weekday {
+  color: var(--color-gray-light);
+}
+
+/* A day with notes: a small dot under its number. */
+.grid-notes {
+  position: absolute;
+  bottom: var(--space-1);
+  width: var(--mark-notes);
+  height: var(--mark-notes);
+  background: currentColor;
+}
+
+.grid-flag {
+  position: absolute;
+  bottom: 0;
+  line-height: var(--leading-tight);
+}
+
+/* Name, then its unit in mono. The unit drops to a second line, out of sight, when there's no room for it. */
+.grid-habit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  height: var(--grid-row);
+  padding-right: var(--space-2);
+  line-height: var(--grid-row);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.grid-habit-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grid td.grid-count,
+.grid th.grid-count {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* One box per day. */
+.grid-cell {
+  position: relative;
+  border-left: var(--rule-faint);
+  cursor: pointer;
+}
+
+.grid td.grid-cell {
+  text-align: center;
+}
+
+.grid-cell:hover {
+  background: var(--color-wash);
+}
+
+/* Days that haven't happened: the ink hasn't reached them. */
+.grid td.grid-cell[data-future] {
+  border-top: var(--rule-faint);
+  cursor: default;
+}
+
+.grid-cell[data-unread] {
+  cursor: default;
+}
+
+.grid-cell[data-future]:hover,
+.grid-cell[data-unread]:hover {
+  background: none;
+}
+
+.grid-cell:focus-visible,
+.grid-day-button:focus-visible {
+  outline-offset: calc(-1 * var(--focus-weight));
+  z-index: 1;
+}
+
+.grid-day[data-today] .grid-day-button:focus-visible {
+  outline-color: var(--color-paper);
+}
+
+/*
+ * Values in a row are all set at one size: as large as the row's longest value
+ * allows in a day's box, up to the mono size. If that would be too small to
+ * read, the row switches to its shortened values (no decimals) instead.
+ * `--chars` and `--chars-short` are the lengths of the row's longest value,
+ * in full and shortened; they are set on the row.
+ */
+.grid tbody tr {
+  --fit: calc((var(--grid-day) - var(--grid-cell-pad)) / (var(--chars, 1) * var(--mono-advance)));
+  --fit-short: calc((var(--grid-day) - var(--grid-cell-pad)) / (var(--chars-short, 1) * var(--mono-advance)));
+  /* One of these two is always 0: a large positive or negative number, clamped. */
+  --size-full: clamp(0rem, (var(--fit) - var(--size-cell-min)) * 9999, min(var(--size-mono), var(--fit)));
+  --size-short: clamp(0rem, (var(--size-cell-min) - var(--fit)) * 9999, min(var(--size-mono), var(--fit-short)));
+}
+
+.grid-value {
+  font-size: max(var(--size-full), var(--size-short));
+}
+
+.grid-value-full {
+  font-size: var(--size-full);
+}
+
+.grid-value-short {
+  font-size: var(--size-short);
+}
+
+/* The input opens over its box, and a little wider when the box is narrow. */
+.grid-input {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: max(100%, var(--grid-editor));
+  transform: translateX(-50%);
+  z-index: 2;
+  text-align: center;
+  background: var(--color-paper);
+  outline: var(--focus-weight) solid var(--color-ink);
+  outline-offset: calc(-1 * var(--focus-weight));
+  user-select: text;
+  cursor: text;
+}
+
+/* ── Marks inside a box ── */
+
+.mark {
+  position: absolute;
+  inset: var(--mark-inset);
+  margin: auto;
+}
+
+/* Done: a bullet-journal ✕, corner to corner of a square. */
+.mark-x {
+  aspect-ratio: 1;
+  max-width: calc(100% - 2 * var(--mark-inset));
+  max-height: calc(100% - 2 * var(--mark-inset));
+  --stroke: calc(var(--mark-weight) / 2);
+  background:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - var(--stroke)),
+      currentColor calc(50% - var(--stroke)),
+      currentColor calc(50% + var(--stroke)),
+      transparent calc(50% + var(--stroke))
+    ),
+    linear-gradient(
+      to top left,
+      transparent calc(50% - var(--stroke)),
+      currentColor calc(50% - var(--stroke)),
+      currentColor calc(50% + var(--stroke)),
+      transparent calc(50% + var(--stroke))
+    );
+}
+
+/* Part of the way to a goal: the box fills from the bottom. */
+.mark-fill {
+  aspect-ratio: 1;
+  max-width: calc(100% - 2 * var(--mark-inset));
+  max-height: calc(100% - 2 * var(--mark-inset));
+  border: var(--rule-weight) solid var(--color-gray);
+  background: linear-gradient(to top, var(--color-gray) calc(var(--fill) * 100%), transparent 0);
+}
+
+/* A tag: a small solid square. */
+.mark-tag {
+  width: var(--mark-tag);
+  height: var(--mark-tag);
+  background: currentColor;
+}
+
+/* No data from the source: a faint dash. Not empty, and not done. */
+.mark-none {
+  width: var(--mark-dash);
+  height: var(--rule-weight);
+  background: var(--color-gray);
 }

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, saveSettings, setMorningPagesGoal,
+  HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, saveSettings, setMorningPagesGoal, weekdayName,
   type Habit, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
+import { useToday } from "./platform/clock";
 import {
   chooseDataRoot, getDataRoot, suggestedDataRoot, tauriFs, adoptSuggestedDataRoot,
 } from "./platform/tauri";
-import { Home } from "./screens/Home";
+import { Grid } from "./screens/Grid";
 import { Settings } from "./screens/Settings";
 
 type Screen = "month" | "settings";
@@ -30,7 +31,7 @@ export default function App() {
   const [skipped, setSkipped] = useState<SkippedHabit[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const today = new Date();
+  const today = useToday();
 
   const fail = (e: unknown) => setError(String(e));
   /** Takes a result and clears the error line: whatever went wrong before, this worked. */
@@ -71,14 +72,17 @@ export default function App() {
     await loadFolder();
   };
 
+  /** The day panel arrives in Milestone 4. Until then a day header has nothing to open. */
+  const openDay = useCallback((_date: string) => {}, []);
+
   if (!ready) return null;
 
   return (
     <div className="app">
       <header className="meta-row">
         <Mono>Wetware</Mono>
-        <Mono>{today.toLocaleDateString("en-US", { weekday: "long" })}</Mono>
-        <Mono>{today.toLocaleDateString("en-CA")}</Mono>
+        <Mono>{weekdayName(today)}</Mono>
+        <Mono>{today}</Mono>
         <Mono muted>{dataRoot ? "Local files" : "No data folder"}</Mono>
       </header>
 
@@ -90,7 +94,16 @@ export default function App() {
             {entry.id === null ? "" : ` (${entry.id})`} is not shown: {entry.reason}.
           </Mono>
         ))}
-        {screen === "month" && dataRoot && <Home habits={habits} today={today} />}
+        {screen === "month" && dataRoot && (
+          <Grid
+            key={dataRoot}
+            fs={tauriFs}
+            habits={habits}
+            today={today}
+            onOpenDay={openDay}
+            onProblem={setError}
+          />
+        )}
         {screen === "settings" && (
           <Settings
             dataRoot={dataRoot}

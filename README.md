@@ -8,7 +8,7 @@ No streaks. No cloud. Your data lives in plain markdown files you own, and they'
 
 ## Status
 
-Milestone 1 (skeleton) is built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, and the intervals.icu key is stored in the Keychain. The month grid is next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
+Milestones 1 and 2 are built: the app launches, you choose a data folder, `habits.yaml` is seeded, settings persist, the intervals.icu key is stored in the Keychain, and the month grid reads and writes day files for every habit type. Sync is next. Build order is in [`SPEC.md` §11](SPEC.md#11-milestones).
 
 ## Docs
 
@@ -34,7 +34,10 @@ npm install
 npm run tauri dev     # run the app
 npm test              # data layer tests
 (cd src-tauri && cargo test)   # shell tests
+npm run shots         # screenshots of the UI into .shots/, with end-to-end checks
 ```
+
+`npm run shots` needs Google Chrome (set `CHROME_PATH` if it isn't in `/Applications`). It runs the real app in a browser tab over a mocked shell and the made-up data folder in `test/fixtures/data-folder/`, with the date pinned to 2026-11-17. The same page can be opened by hand: `npm run dev`, then `http://localhost:1420/dev/preview.html`.
 
 ## How it's put together
 
@@ -45,5 +48,6 @@ npm test              # data layer tests
 | `src/platform/tauri.ts` | The only place the UI talks to the Rust shell. |
 | `src/screens/`, `src/components/` | React UI. No raw colors or sizes; tokens only. |
 | `src-tauri/` | Rust shell: file access limited to the data folder, folder dialog, Keychain. |
+| `dev/` | The browser preview and the screenshot script. Not part of the app bundle. |
 
 The data folder's location is kept in the app's own config (`~/Library/Application Support/com.brianokarski.wetware/config.json`), since it can't live inside the folder it points to. The intervals.icu key can be saved or removed from the UI but is never handed back to it; sync will read it on the Rust side.
