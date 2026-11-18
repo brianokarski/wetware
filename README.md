@@ -56,7 +56,9 @@ npm run shots         # screenshots of the UI into .shots/, with end-to-end chec
 | `src-tauri/` | Rust shell: file access limited to the data folder, folder dialog, Keychain, and the two fetches sync makes (`net.rs`). |
 | `dev/` | The browser preview and the screenshot script. Not part of the app bundle. |
 
-A read or write the shell never answers is given up on after 30 seconds, with a message, so that one stuck file can't hold up the rest.
+A read or write the shell never answers is given up on after 30 seconds, with a message, so that one stuck file can't hold up the rest. The shell lets writes to one file land one at a time, in the order they were asked for, so a write that was given up on and lands late lands before any newer one, never over it.
+
+**Closing and quitting.** A window asked to close, or the app asked to quit from its menu (⌘Q), is held by the shell while it asks the app to save what is being typed, and closes when the app answers or after 3 seconds, whichever is first. The Quit menu item is the app's own for this reason; the system's would quit without asking. Quitting from the Dock, or the Mac shutting down, is not held. With `WETWARE_TRACE=1` the shell prints `flush_asked`, then `flush_answered` or `flush_timed_out`.
 
 The shell gives each opening of the data folder a number. Every file command carries the number it was given, and the shell refuses one whose number is stale, so nothing worked out for one folder (a sync, a cell edit) can be written into another.
 
@@ -87,19 +89,32 @@ The writing room takes the whole window: no navigation, no message line, only th
 - The text is one field. Every 250 words a new page begins, and its number is set in the margin beside the line it begins on. The strip at the top says which page the writing has reached ("page 2 of 3") and the count against the goal ("412 / 750 words"). The goal is the Morning pages habit's, set in Settings. Reaching it changes nothing in the room; in the grid, the day's box gets its ✕.
 - A word is whatever is left when the text is split on white space. Writing with no spaces between words counts by its runs.
 - It saves as notes do: a moment (0.8 s) after typing stops, at least every 3 s while it doesn't, and at once when you leave the room or the window goes to the background, is hidden or is asked to close.
+- The room is not left with text that isn't on disk. Leaving waits for the last save to land. If it can't be made (a full disk, a locked file), the room stays open and says why; the only way out then is "Leave without saving".
+- "Pages" and "Write" mean today as the clock has it at the moment you press them, so pages begun just after midnight go to the new day's file.
 - There is no timer, and nothing is said about other days.
 
 **Where the text goes.** Into `pages/YYYY-MM-DD.md`, exactly as typed, and nowhere else. The only thing that leaves is the word count, written to the day file as the Morning pages habit's value (`morning_pages_words`) with `morning_pages` as its source.
 
-- One module (`src/data/pages.ts`) reads and writes these files, and only the writing room is allowed its read function. `test/pages.privacy.test.ts` reads the source and fails if anything else names that function or the pages folder, or if the app gains anywhere for text to go: browser storage, the console, a network call of its own.
-- A screenshot scenario (`pages-private`) writes a phrase in the room and then looks for it everywhere else: every other file, browser storage, everything logged, everything sent to the shell. It has to be in the pages file only.
+- One module (`src/data/pages.ts`) reads and writes these files. Two of its functions are for the writing room alone, which imports them from the module itself: the one that hands over the text, and the one that says where a day's pages are kept. Other screens get numbers (how many words a day's pages hold) and nothing else.
+- `test/pages.privacy.test.ts` reads the source and fails if:
+  - the module exports anything that is not on the test's own list, or the data layer's front door passes on anything but that list less the room's two;
+  - anything but the room names either of those two functions, or imports the module directly;
+  - anything but the module names the pages folder, in any case (`Pages/` is the same folder to the file system);
+  - a screen reads a file for itself, where files are read by the data-layer modules that own them;
+  - the app gains anywhere for text to go: browser storage, the console, a network call of its own.
+- What that test can't see is a path put together at run time from pieces. The scenario below is the check on what the app does, whatever its source says.
+- A screenshot scenario (`pages-private`) writes a phrase in the room and then looks for it everywhere else: every other file, browser storage, everything logged, everything sent to the shell, anything hung on the window. It has to be in the pages file only.
 - Messages about a pages file name the file and never quote it.
 - The shell creates files under `pages/`, and the folder itself, readable and writable by you alone (`0600`, `0700`). A file that is already there keeps the permissions it has.
+- The field asks the system not to write suggestions for it (`writingsuggestions="false"`: inline predictions). That is the one switch a page has. macOS Writing Tools, Look Up, Translate and dictation are the system's own, offered on any text field of any app; they act only when you invoke them, and some of them send the selected text to Apple. The app can't turn them off from inside the web view.
 
 **The count.**
 
-- The room keeps the day file's count while the count is its own: there is none yet, or `_sources` says `morning_pages`. Emptying the text takes the count back out.
+- The room keeps the day file's count while the count is its own: there is none (an empty count is nobody's, whoever emptied it), or `_sources` says `morning_pages`. It counts whatever text it shows, not only what was typed in it: pages written or changed in another app are counted when the room next opens on them and is left.
+- Emptying the text takes the count back out, with its `_sources` entry, and `_sources` itself if that was its only entry. A day file that then holds nothing but its own date, exactly as the app writes one, is removed.
 - A count set by hand is left as it is: one `_sources` calls `manual` (a number typed on the Morning pages box in the grid, or into the day view), or one with no `_sources` entry at all. The room still saves the text, and says below it that the count is not its own.
+- To give such a count back to the room, open the day: where the day has pages, the Morning pages row has "Use the room's count", which sets it to the number of words the pages hold. Or clear it, and the room counts the day the next time it is open.
+- Backspace and Delete on a Morning pages box do nothing to a count the room wrote. They clear one set by hand.
 - If the text is saved and the count can't be (the day file needs fixing by hand, say), the room says so, and the count is written by the next save that can.
 
 **If the file changes outside the app while the room is open**, the rule is the day view's: the text is only ever saved over the text it was typed from. Coming back to the window, the file is read again, and taken as it is if nothing unsaved is typed. If something is, nothing is written and the room asks whether to keep what is typed or take the file's text. Until you choose, nothing is saved and the room can't be left.
