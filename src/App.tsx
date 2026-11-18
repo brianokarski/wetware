@@ -33,9 +33,18 @@ export default function App() {
   const today = new Date();
 
   const fail = (e: unknown) => setError(String(e));
+  /** Takes a result and clears the error line: whatever went wrong before, this worked. */
+  const done = <T,>(take: (value: T) => void) => (value: T) => {
+    take(value);
+    setError(null);
+  };
 
   /** Read (and on first use, seed) the data folder. */
   const loadFolder = useCallback(async () => {
+    // If this folder fails to load, nothing from the one open before may stay on screen under its path.
+    setHabits([]);
+    setSkipped([]);
+    setSettings(null);
     const file = await loadHabitsFile(tauriFs);
     setHabits(file.habits);
     setSkipped(file.skipped);
@@ -90,8 +99,8 @@ export default function App() {
             pagesGoal={morningPagesGoal(habits)}
             onChooseFolder={() => chooseDataRoot().then(openFolder).catch(fail)}
             onUseSuggested={() => adoptSuggestedDataRoot().then(openFolder).catch(fail)}
-            onSave={(patch) => saveSettings(tauriFs, patch).then(setSettings).catch(fail)}
-            onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(setHabits).catch(fail)}
+            onSave={(patch) => saveSettings(tauriFs, patch).then(done(setSettings)).catch(fail)}
+            onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(done(setHabits)).catch(fail)}
           />
         )}
       </main>
