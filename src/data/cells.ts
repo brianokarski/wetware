@@ -4,6 +4,7 @@
  * and writing a cell back to its day file.
  */
 import { DAYS_DIR, parseDay, readDay, tagList, writeDay, type Day, type DayPatch, type DayValue } from "./dayFile";
+import { TAGS_KEY } from "./dayKeys";
 import type { DataFs } from "./fs";
 import { dayKey, type Habit, type HabitType } from "./habits";
 import type { Parsed } from "./input";
@@ -36,7 +37,7 @@ const EXTERNAL_SOURCES = new Set(["intervals", "weather", "open-meteo"]);
 
 /** The day's tags (SPEC §6.2). A `tag` habit is on when its id is one of them. */
 export function dayTags(day: Day): string[] {
-  return tagList(day.values.tags);
+  return tagList(day.values[TAGS_KEY]);
 }
 
 /** The frontmatter value behind a cell, as written. Undefined if the key isn't there. */
@@ -157,7 +158,7 @@ export function withPatch(day: Day, patch: DayPatch): Day {
     const { add = [], remove = [] } = patch.tags;
     const tags = dayTags(day).filter((tag) => !remove.includes(tag));
     for (const tag of add) if (!tags.includes(tag)) tags.push(tag);
-    values.tags = tags;
+    values[TAGS_KEY] = tags;
   }
   const sources = { ...day.sources };
   for (const [key, source] of Object.entries(patch.sources ?? {})) {

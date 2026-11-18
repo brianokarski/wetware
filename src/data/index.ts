@@ -1,6 +1,7 @@
 export * from "./fs";
 export * from "./habits";
 export * from "./settings";
+export * from "./dayKeys";
 export * from "./dayFile";
 export * from "./input";
 export * from "./month";
