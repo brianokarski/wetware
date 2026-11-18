@@ -4,6 +4,27 @@ import {
   parseDateKey, previousMonth, sameMonth, weekday, weekdayInitial, weekdayName,
 } from "../src/data";
 
+/**
+ * Runs `check` with the process in another time zone, and puts the zone back
+ * after. An unset TZ has to be deleted, not assigned: assigning undefined
+ * sets the text "undefined", which Node reads as UTC.
+ */
+function inZone(zone: string, check: () => void): void {
+  const before = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    // Guard against a zone name that silently falls back to UTC.
+    if (zone !== "UTC") expect(new Date(2026, 5, 1).getTimezoneOffset()).not.toBe(0);
+    check();
+  } finally {
+    if (before === undefined) delete process.env.TZ;
+    else process.env.TZ = before;
+  }
+}
+
+/** West of UTC, far east of it (the calendar day differs from UTC for most of the day), and a half-hour offset. */
+const ZONES = ["America/Los_Angeles", "Pacific/Kiritimati", "Asia/Kolkata", "UTC"];
+
 describe("date keys are local calendar days", () => {
   it("uses the local date parts, not UTC", () => {
     // Late evening and just after midnight, local time: toISOString() would name the wrong day
@@ -14,10 +35,8 @@ describe("date keys are local calendar days", () => {
     expect(dateKey(new Date(2026, 11, 31, 23, 59, 59))).toBe("2026-12-31");
   });
 
-  it.each(["America/Los_Angeles", "Pacific/Kiritimati", "Asia/Kolkata", "UTC"])("names the local day in %s", (zone) => {
-    const before = process.env.TZ;
-    process.env.TZ = zone;
-    try {
+  it.each(ZONES)("names the local day in %s", (zone) => {
+    inZone(zone, () => {
       const lateEvening = new Date(2026, 10, 17, 23, 30);
       const earlyMorning = new Date(2026, 10, 17, 0, 30);
       expect(dateKey(lateEvening)).toBe("2026-11-17");
@@ -27,9 +46,16 @@ describe("date keys are local calendar days", () => {
         const utcDays = [lateEvening, earlyMorning].map((d) => d.toISOString().slice(0, 10));
         expect(utcDays).not.toEqual(["2026-11-17", "2026-11-17"]);
       }
-    } finally {
-      process.env.TZ = before;
-    }
+    });
+  });
+
+  it("leaves the time zone as it found it", () => {
+    const before = process.env.TZ;
+    const offset = new Date(2026, 5, 1).getTimezoneOffset();
+    inZone("Pacific/Kiritimati", () => expect(new Date(2026, 5, 1).getTimezoneOffset()).toBe(-840));
+    expect(process.env.TZ).toBe(before);
+    expect("TZ" in process.env).toBe(before !== undefined);
+    expect(new Date(2026, 5, 1).getTimezoneOffset()).toBe(offset);
   });
 
   it("pads months, days and early years", () => {
@@ -90,12 +116,31 @@ describe("months", () => {
     expect(sameMonth({ year: 2026, month: 11 }, { year: 2027, month: 11 })).toBe(false);
   });
 
-  it("knows the weekday of a date", () => {
-    expect(weekday("2026-11-01")).toBe(0);
-    expect(weekday("2026-11-17")).toBe(2);
-    expect(weekdayInitial("2026-11-17")).toBe("T");
-    expect(weekdayName("2026-11-01")).toBe("Sunday");
-    expect(longDate("2026-11-17")).toBe("Tuesday, November 17, 2026");
-    expect(weekday("2027-02-28")).toBe(0);
+  // Run in zones either side of UTC: a weekday read from a UTC date, or from a date parsed
+  // as UTC, is a day out in one of them.
+  it.each(ZONES)("knows the weekday of a date in %s", (zone) => {
+    inZone(zone, () => {
+      expect(weekday("2026-11-01")).toBe(0);
+      expect(weekday("2026-11-17")).toBe(2);
+      expect(weekday("2027-02-28")).toBe(0);
+      expect(weekday("2026-12-31")).toBe(4);
+      expect(weekday("2027-01-01")).toBe(5);
+      expect(weekday("2028-02-29")).toBe(2);
+      // The days the clocks change in Los Angeles.
+      expect(weekday("2026-03-08")).toBe(0);
+      expect(weekday("2026-11-01")).toBe(0);
+      expect(weekdayInitial("2026-11-17")).toBe("T");
+      expect(weekdayInitial("2026-11-01")).toBe("S");
+      expect(weekdayName("2026-11-01")).toBe("Sunday");
+      expect(weekdayName("2026-11-17")).toBe("Tuesday");
+      expect(longDate("2026-11-17")).toBe("Tuesday, November 17, 2026");
+      expect(longDate("2026-01-01")).toBe("Thursday, January 1, 2026");
+      expect(monthName({ year: 2026, month: 11 })).toBe("November");
+      expect(monthName({ year: 2027, month: 1 })).toBe("January");
+      // Every day of a month falls on the weekday after the one before it.
+      const days = monthDates({ year: 2026, month: 11 }).map(weekday);
+      expect(days).toEqual(days.map((_, i) => i % 7));
+    });
   });
+
 });
