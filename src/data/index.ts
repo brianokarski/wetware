@@ -9,7 +9,8 @@ export * from "./cells";
 export * from "./dayView";
 export * from "./notices";
 export * from "./autosave";
-// Morning pages: everything but `readPages`, which hands over the text and is for the writing room alone.
+// Morning pages: everything but the one function that hands over their text. That one is for the writing room
+// alone, which imports it from the module itself (test/pages.privacy.test.ts holds everyone to this).
 export {
   countWords, currentPage, goalPages, pageLine, PAGES_SOURCE, PagesChangedError, pagesCountPatch, PagesCountError, pagesHabit,
   pagesNoticeKey, pagesPath, pageStarts, roomKeepsCount, savePages, WORDS_PER_PAGE, wordLine,
