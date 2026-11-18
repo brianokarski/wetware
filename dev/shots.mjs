@@ -1699,14 +1699,16 @@ const scenarios = [
       await t.ready();
       assert.deepEqual(await t.paths(), paths);
       assert.equal(await t.writes(), written);
+      // Escape straight from the typing, on a slow disk: the grid that comes back waits for the file being made.
       await t.openDay(9);
+      await t.page.evaluate(() => window.wetware.slowWrite("days/2026-11-09.md", 300));
       await t.page.focus(".day-notes");
       await t.page.keyboard.type("Rest day.");
-      await t.page.click(".day .month-nav button:nth-child(2)");
+      await t.page.keyboard.press("Escape");
       await t.ready();
-      await t.saved();
       assert.equal(await t.file("days/2026-11-09.md"), "---\ndate: 2026-11-09\n---\n\nRest day.");
       assert.equal(await t.count(".grid-notes"), 5);
+      await t.page.evaluate(() => window.wetware.slowWrite("days/2026-11-09.md", null));
       assert.equal(await t.page.$eval('.grid-day-button[data-date="2026-11-09"]', (el) => el.getAttribute("aria-label")), "Monday, November 9, 2026, has notes");
       // Notes taken out again: the mark goes, and the file keeps its frontmatter.
       await t.openDay(9);
@@ -1717,6 +1719,18 @@ const scenarios = [
       await t.saved();
       assert.equal(await t.file("days/2026-11-09.md"), "---\ndate: 2026-11-09\n---\n");
       assert.equal(await t.count(".grid-notes"), 4);
+
+      // A file with no date key, a comment and spacing of its own: notes are written under it, and it is not tidied.
+      const plain = "---\n# kept by hand\nmood:   3\ncaffeine_mg: 90\n---\nOld note.\n";
+      await t.page.evaluate((text) => window.wetware.write("days/2026-11-06.md", text), plain);
+      await t.reload();
+      await t.openDay(6);
+      assert.equal(await notes(), "Old note.\n");
+      await caretToEnd();
+      await t.page.keyboard.type("New note.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.file("days/2026-11-06.md"), "---\n# kept by hand\nmood:   3\ncaffeine_mg: 90\n---\nOld note.\nNew note.");
 
       // Notes that can't be saved: said, kept in the field, and saved by the next try.
       await t.openDay(16);
