@@ -153,12 +153,13 @@ fn unique_suffix() -> String {
 }
 
 /// A folder for the file being written, if it isn't there yet. One made to
-/// hold private files can be opened by its owner alone.
+/// hold private files can be opened by its owner alone. A folder that is
+/// already there is left as it is.
 fn create_dir(dir: &Path, private: bool) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
-    if private && !dir.exists() {
+    if private {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
@@ -554,6 +555,12 @@ mod tests {
         fs::set_permissions(s.data.join("pages"), fs::Permissions::from_mode(0o755)).unwrap();
         write(&s.data, "pages/new.md", "private").unwrap();
         assert_eq!((mode("pages"), mode("pages/new.md")), (0o755, 0o600));
+        // And a file that was already there, made by another app with permissions of its own, keeps them when it is replaced.
+        fs::write(s.data.join("pages/theirs.md"), "old").unwrap();
+        fs::set_permissions(s.data.join("pages/theirs.md"), fs::Permissions::from_mode(0o644)).unwrap();
+        write(&s.data, "pages/theirs.md", "new").unwrap();
+        assert_eq!(mode("pages/theirs.md"), 0o644);
+        assert_eq!(mode("pages"), 0o755);
     }
 
     #[test]

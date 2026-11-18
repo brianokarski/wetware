@@ -273,6 +273,9 @@ describe("saving pages", () => {
     expect(fs.written).toEqual([]);
     await savePages(fs, DATE, "line one\nline two\nline three\n", at("line one\nline two\n"), null);
     expect(fs.files.get(PAGES)).toBe("\uFEFFline one\r\nline two\r\nline three\r\n");
+    // Emptied, the file is empty: not a byte order mark with nothing behind it.
+    await savePages(fs, DATE, "", at("line one\nline two\nline three\n"), null);
+    expect(fs.files.get(PAGES)).toBe("");
   });
 
   it("keeps the text even when there is no habit to count it for", async () => {
