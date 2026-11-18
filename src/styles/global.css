@@ -639,3 +639,192 @@ textarea {
   outline: none;
   background: var(--color-wash);
 }
+
+/* ── The line beside the month's name that leads to the writing room ── */
+
+.month-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: var(--col-gutter);
+}
+
+.pages-prompt {
+  display: flex;
+  align-items: baseline;
+  column-gap: var(--space-4);
+  white-space: nowrap;
+}
+
+/* ── Writing room: morning pages. No chrome; softer ink on softer paper; the text and its margin. ── */
+
+html[data-room],
+html[data-room] body {
+  background: var(--room-paper);
+}
+
+/* What the browser brings into view (the caret, a focused control) stays clear of the strip at the top. */
+html[data-room] {
+  scroll-padding-top: var(--room-top);
+}
+
+.room {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-inline: var(--page-margin);
+  background: var(--room-paper);
+  color: var(--room-ink);
+}
+
+.room :focus-visible {
+  outline-color: var(--room-ink);
+}
+
+/* The strip stays in sight while the paper scrolls under it. */
+.room-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-block: var(--page-margin) var(--space-2);
+  background: var(--room-paper);
+  color: var(--room-quiet);
+}
+
+/* The paper goes out of sight under the strip softly, not at a hard edge. */
+.room-head::after {
+  content: "";
+  position: absolute;
+  inset: 100% 0 auto;
+  height: var(--space-6);
+  background: linear-gradient(var(--room-paper), transparent);
+  pointer-events: none;
+}
+
+.room-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--col-gutter);
+}
+
+.room-leave {
+  justify-self: end;
+  cursor: pointer;
+}
+
+.room-leave:hover,
+.room-action:hover {
+  color: var(--room-ink);
+}
+
+/* Said quietly: one or two lines under the strip, with what can be done about it beside them. */
+.room-said {
+  display: flex;
+  align-items: baseline;
+  column-gap: var(--col-gutter);
+  min-height: calc(2 * var(--leading-mono) * var(--size-mono));
+  padding-top: var(--space-2);
+}
+
+.room-notice {
+  flex: 1;
+  min-width: 0;
+  color: var(--room-ink);
+  user-select: text;
+}
+
+.room-choices {
+  display: flex;
+  column-gap: var(--space-4);
+}
+
+.room-action {
+  flex: none;
+  cursor: pointer;
+  color: var(--room-ink);
+  text-decoration: underline;
+  text-decoration-thickness: var(--rule-weight);
+  text-underline-offset: var(--space-1);
+  white-space: nowrap;
+}
+
+/*
+ * The column of text hangs from the strip's own grid: it starts under the
+ * strip's second column, flush left. Pages are numbered in the margin to its left.
+ */
+.room-sheet {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  column-gap: var(--col-gutter);
+  padding-top: var(--room-top);
+}
+
+.room-sheet > * {
+  grid-column: 2 / -1;
+  max-width: var(--room-measure);
+}
+
+/* The field and its unseen copy share one box, so the field is as tall as the text. */
+.room-page {
+  position: relative;
+  display: grid;
+}
+
+.room-text {
+  grid-area: 1 / 1;
+  min-width: 0;
+  font-family: var(--room-font);
+  font-weight: var(--room-weight);
+  font-size: var(--room-size);
+  line-height: var(--room-leading);
+  letter-spacing: var(--room-tracking);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.room-copy {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.room-field {
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  caret-color: var(--room-ink);
+  user-select: text;
+  cursor: text;
+}
+
+/* The field is the room. Its caret says where the keyboard is. */
+.room-field:focus-visible {
+  outline: none;
+}
+
+.room-field::placeholder {
+  color: var(--room-quiet);
+}
+
+/* Where a page begins: its number in the margin, on the line it begins on, under a hairline. */
+.room-mark {
+  position: absolute;
+  top: var(--at);
+  left: calc(-1 * var(--room-margin));
+  width: var(--room-mark);
+  height: calc(var(--room-leading) * var(--room-size));
+  border-top: var(--rule-weight) solid var(--room-rule);
+  color: var(--room-quiet);
+  line-height: calc(var(--room-leading) * var(--room-size));
+  pointer-events: none;
+}
+
+/* Brought into view as the last line is written, so that line is never at the very edge of the window. */
+.room-end {
+  height: var(--room-clear);
+}
+
+.room-foot {
+  padding-bottom: var(--room-foot);
+  color: var(--room-quiet);
+}

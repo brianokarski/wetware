@@ -2,11 +2,18 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Keyb
 import { Mono } from "../components/primitives";
 import {
   cellNoticeKey, cellPatch, cellState, dayNoticeKey, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate,
-  monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, parseCellInput, previousMonth, readDay,
-  reason, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, writeCell,
+  monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, PAGES_SOURCE, pagesHabit, parseCellInput,
+  previousMonth, readDay, reason, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, wordLine, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
 import { lastSyncedLabel } from "../sync";
+
+/** A place in the grid: a day, and on that day its header or the box of one habit. */
+export interface GridPlace {
+  date: string;
+  /** The habit whose box it is. Left out, or a habit not on show: the day's header. */
+  habit?: string;
+}
 
 interface Props {
   fs: DataFs;
@@ -15,13 +22,16 @@ interface Props {
   today: string;
   /** Asks for a day to be opened in the day view. Whether it can be (not a day still to come) is decided there. */
   onOpenDay: (date: string) => void;
+  /** Asks for a day's morning pages to be opened in the writing room. Whether they can be is decided there. */
+  onOpenPages: (date: string) => void;
   /** Called once the grid has opened at `openAt`. */
   onArrive: () => void;
   /**
-   * A day to open the grid on, with the keyboard on its header: the day the
-   * day view was showing when it was closed. Null: this month, at today.
+   * Where to open the grid, with the keyboard there: the day the day view
+   * was showing when it was closed, or the box the writing room was opened
+   * from. Null: this month, at today.
    */
-  openAt: string | null;
+  openAt: GridPlace | null;
   /**
    * Puts something on the message line: a failed save, input that wasn't
    * accepted, a file that needs fixing. `key` says what it is about.
@@ -61,12 +71,15 @@ const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, settle, sync, onSync }: Props) {
-  const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt ?? today));
+export function Grid({ fs, habits, today, onOpenDay, onOpenPages, openAt, onArrive, notify, settle, sync, onSync }: Props) {
+  const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt?.date ?? today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
-  const [wanted, setFocus] = useState<Position>(() =>
-    openAt ? { row: HEADER_ROW, col: Number(openAt.slice(8)) - 1 } : { row: 0, col: Number(today.slice(8)) - 1 },
-  );
+  const [wanted, setFocus] = useState<Position>(() => {
+    if (!openAt) return { row: 0, col: Number(today.slice(8)) - 1 };
+    // A habit that isn't on show has no row: -1, which is the row of day headers.
+    const row = openAt.habit === undefined ? HEADER_ROW : habits.filter((habit) => !habit.archived).findIndex((habit) => habit.id === openAt.habit);
+    return { row, col: Number(openAt.date.slice(8)) - 1 };
+  });
   /** Whether the keyboard is still to be put on the header of the day the grid was opened at. */
   const returning = useRef(openAt !== null);
   /** The open editor. `replace`: the text is selected when it opens, so typing replaces it. */
@@ -204,7 +217,11 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, s
 
   const activate = (at: Position, startWith?: string) => {
     const found = cellAt(at);
-    if (!found || !editable(found.day)) return;
+    if (!found) return;
+    // The Morning pages box opens that day's pages in the writing room. A number typed on it is still a
+    // count entered by hand, for pages written somewhere else.
+    if (found.habit.source === PAGES_SOURCE && startWith === undefined) return onOpenPages(found.day.date);
+    if (!editable(found.day)) return;
     const { habit, day, cell } = found;
     if (TYPED.has(habit.type)) {
       // Opened on a value, the value is selected; opened by typing, the typed character starts the entry.
@@ -318,7 +335,10 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, s
         </span>
       </header>
 
-      <h1 className="display">{monthName(month)}</h1>
+      <div className="month-title">
+        <h1 className="display">{monthName(month)}</h1>
+        <PagesPrompt habit={pagesHabit(habits)} day={isCurrent ? days?.[today] : undefined} today={today} onWrite={() => onOpenPages(today)} />
+      </div>
 
       <table
         ref={table}
@@ -469,6 +489,28 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, s
       </table>
       {rows.length === 0 && <Mono muted>No habits to show. They are listed in habits.yaml, in the data folder.</Mono>}
     </section>
+  );
+}
+
+/**
+ * One quiet line beside the month's name while today's morning pages are
+ * short of their goal: how far they have got, and the way into the writing
+ * room. It is gone once they are there, and it never says anything of any
+ * other day. It sits on the name's own line, so nothing moves when it goes.
+ */
+function PagesPrompt(props: { habit: Habit | null; day: Day | undefined; today: string; onWrite: () => void }) {
+  const { habit, day } = props;
+  if (!habit || !day || day.error) return null;
+  const cell = cellState(habit, day, props.today);
+  if (cell.met) return null;
+  return (
+    <p className="pages-prompt mono">
+      <span className="muted">Morning pages</span>
+      <span>{wordLine(typeof cell.value === "number" ? cell.value : 0, habit.goal)} today</span>
+      <button type="button" className="action" onClick={props.onWrite}>
+        Write
+      </button>
+    </p>
   );
 }
 

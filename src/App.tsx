@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  currentNotice, dateKey, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, reason, saveSettings, setMorningPagesGoal,
-  SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
+  currentNotice, dateKey, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, pagesHabit, pagesNoticeKey, reason, saveSettings,
+  setMorningPagesGoal, SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
   type DataFs, type Habit, type Notice, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
 import { now, useToday } from "./platform/clock";
@@ -12,16 +12,18 @@ import {
 import { useSync } from "./platform/useSync";
 import { testConnection } from "./sync";
 import { DayPanel, type DayNav } from "./screens/DayPanel";
-import { Grid } from "./screens/Grid";
+import { Grid, type GridPlace } from "./screens/Grid";
+import { MorningPages } from "./screens/MorningPages";
 import { Settings } from "./screens/Settings";
 
-type Screen = "month" | "settings";
+/** `room` is the writing room for morning pages, which takes the whole window. */
+type Screen = "month" | "room" | "settings";
 
 /** Later milestones fill these in; shown disabled so the map is visible. */
 const NAV: { id: Screen | null; label: string }[] = [
   { id: "month", label: "Month" },
   { id: null, label: "Calendar" },
-  { id: null, label: "Pages" },
+  { id: "room", label: "Pages" },
   { id: null, label: "Habits" },
   { id: "settings", label: "Settings" },
 ];
@@ -49,15 +51,18 @@ export default function App() {
   /** The day open in the day view, in place of the month grid. Null: the grid is showing. */
   const [day, setDay] = useState<string | null>(null);
   /**
-   * The day the grid opens on next, with focus on its header: the one the day
-   * view was showing when it closed. Used once: it is cleared as soon as the
+   * Where the grid opens next, with the keyboard there: the header of the day
+   * the day view was showing when it closed, or the Morning pages box of the
+   * day the writing room was open on. Used once: it is cleared as soon as the
    * grid has opened there, so another month, or another screen and back, is
    * not pulled back to it.
    */
-  const [returnTo, setReturnTo] = useState<string | null>(null);
+  const [returnTo, setReturnTo] = useState<GridPlace | null>(null);
+  /** The day whose morning pages are open in the writing room. Null: the room is shut. */
+  const [pagesDate, setPagesDate] = useState<string | null>(null);
   /** Which control of the day view's header has the keyboard when a day opens. */
   const [dayArrive, setDayArrive] = useState<DayNav>("month");
-  /** The day view's say on whether it can be left. Null when no day is open. */
+  /** The say of the day view, or of the writing room, on whether it can be left. Null when neither is open. */
   const leaveGuard = useRef<(() => boolean) | null>(null);
   const today = useToday();
 
@@ -150,14 +155,51 @@ export default function App() {
   /** Back to the month, with the keyboard on the header of the day that was open. */
   const closeDay = useCallback(() => {
     if (!mayLeave()) return;
-    if (day !== null) setReturnTo(day);
+    if (day !== null) setReturnTo({ date: day });
     setDay(null);
   }, [day, mayLeave]);
+  /**
+   * Opens the writing room on a day's morning pages, in place of everything
+   * else. A day that hasn't come yet has no pages to write.
+   */
+  const openPages = useCallback(
+    (date: string) => {
+      if (date > dateKey(now()) || !mayLeave()) return;
+      setDay(null);
+      setPagesDate(date);
+      setScreen("room");
+    },
+    [mayLeave],
+  );
+  /** Out of the writing room, to the month its day is in, with the keyboard on that day's Morning pages box. */
+  const leavePages = useCallback(() => {
+    if (!mayLeave()) return;
+    if (pagesDate !== null) setReturnTo({ date: pagesDate, habit: pagesHabit(habits)?.id });
+    setPagesDate(null);
+    setScreen("month");
+  }, [pagesDate, habits, mayLeave]);
   /** The grid has opened where it was asked to. From here on it opens where it always does. */
   const arrived = useCallback(() => setReturnTo(null), []);
 
   if (!ready) return null;
   const notice = currentNotice(notices);
+
+  // The writing room is bare: no header, no message line, no navigation. What it has to say, it says itself.
+  if (screen === "room" && folder && fs && pagesDate !== null) {
+    return (
+      <MorningPages
+        key={`${folder.id} ${pagesDate}`}
+        fs={fs}
+        habit={pagesHabit(habits)}
+        date={pagesDate}
+        notice={notices.find((said) => said.key === pagesNoticeKey(pagesDate))?.text ?? null}
+        leaveGuard={leaveGuard}
+        onLeave={leavePages}
+        notify={notify}
+        settle={settle}
+      />
+    );
+  }
 
   return (
     <div className="app">
@@ -207,6 +249,7 @@ export default function App() {
             openAt={returnTo}
             onArrive={arrived}
             onOpenDay={openDay}
+            onOpenPages={openPages}
             notify={notify}
             settle={settle}
             sync={sync}
@@ -238,9 +281,11 @@ export default function App() {
               type="button"
               className="nav-item"
               aria-current={item.id === screen ? "page" : undefined}
-              disabled={item.id === null || (item.id === "month" && !dataRoot)}
+              disabled={item.id === null || (item.id !== "settings" && !dataRoot)}
               onClick={() => {
                 if (!item.id || !mayLeave()) return;
+                // "Pages" is today's pages, in the writing room.
+                if (item.id === "room") return openPages(today);
                 // "Month" is the month: from a day, it goes back to the grid.
                 if (item.id === "month") closeDay();
                 setScreen(item.id);
