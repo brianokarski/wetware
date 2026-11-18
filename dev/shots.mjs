@@ -12,7 +12,7 @@
  *   CHROME_PATH=/path/to/chrome   use a different Chrome
  */
 import assert from "node:assert/strict";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
@@ -23,6 +23,17 @@ const OUT = fileURLToPath(new URL("../.shots/", import.meta.url));
 const WIDE = { width: 1280, height: 820 };
 const SMALL = { width: 960, height: 600 };
 const TODAY_FILE = "days/2026-11-17.md";
+
+/** A file of the fixture data folder as it is on disk, before the app has touched its copy. */
+const fixtureFile = (path) => readFile(new URL(`../test/fixtures/data-folder/${path}`, import.meta.url), "utf8");
+/** What a sync at the pinned time (09:41 on 2026-11-17, in this machine's time zone) writes to `_synced_at`. */
+const SYNCED_AT = (() => {
+  const offset = -new Date(2026, 10, 17, 9, 41).getTimezoneOffset();
+  const two = (n) => String(n).padStart(2, "0");
+  return `2026-11-17T09:41:00${offset < 0 ? "-" : "+"}${two(Math.floor(Math.abs(offset) / 60))}:${two(Math.abs(offset) % 60)}`;
+})();
+const NOT_CONNECTED = "intervals.icu isn't connected, so runs and sleep don't fill in. Add an API key in Settings.";
+const KEY_REJECTED = "intervals.icu did not accept the API key. Paste it again in Settings; it is under Developer Settings on intervals.icu.";
 
 /** The frontmatter lines of a day file, for comparing what changed. */
 const lines = (text) => text.split("\n");
@@ -523,7 +534,9 @@ const scenarios = [
     async run(t) {
       const key = (name) => t.page.keyboard.press(name);
       const before = await t.file(TODAY_FILE);
-      // One tab stop: past the three month buttons, into the grid at today, and out the far side.
+      // Sync is the first stop. Then the grid is one tab stop: past the three month buttons, in at today, and out the far side.
+      await key("Tab");
+      assert.equal(await t.page.evaluate(() => document.activeElement.textContent), "Sync");
       for (let i = 0; i < 4; i++) await key("Tab");
       assert.equal(await t.focused(), "weight 2026-11-17");
       await key("Tab");
@@ -912,6 +925,277 @@ const scenarios = [
     },
   },
   {
+    name: "sync",
+    about: "opening the app syncs: cells fill in, sources are recorded, and what was set by hand stays",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      await t.told("Sync: 24 days updated.");
+      assert.equal(await t.problem(), "Sync: 24 days updated.");
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      // One sync, three fetches, each for the seven days before the month through today.
+      assert.deepEqual((await t.fetches()).sort(), ["activities 2026-10-25 2026-11-17", "weather 37.8 -122.27 2026-10-25 2026-11-17", "wellness 2026-10-25 2026-11-17"]);
+
+      // Today's run is in, and the 9th, which had no file: a run beside a night with no sleep data.
+      await t.stateIs("run", 17, "done");
+      assert.equal(await t.state("run", 9), "done");
+      assert.equal(await t.state("sleep", 9), "no_data");
+      assert.equal(await t.cellText("weight", 9), "171.1");
+      assert.equal(await t.countText("run"), "9/30");
+      // The weekend the watch was off is still "no data", Strava stub and all. Sleep cleared by hand stays cleared.
+      assert.equal(await t.state("run", 7), "no_data");
+      assert.equal(await t.state("run", 8), "no_data");
+      assert.equal(await t.state("sleep", 13), "missed");
+      // Lift and Climb name no activity type: nothing was written for them, strength sessions or not.
+      assert.equal(await t.state("lift", 9), "no_data");
+      assert.equal(await t.state("lift", 17), "pending");
+      assert.equal(await t.countText("lift"), "4/30");
+      assert.equal(await t.countText("climb"), "2/30");
+
+      // The files: only the lines sync owns changed, and each value has its source.
+      assert.deepEqual(changed(await fixtureFile(TODAY_FILE), await t.file(TODAY_FILE)), {
+        added: [
+          "run: true", "weather_high_f: 47", "weather_low_f: 40", "weather_precip_in: 0.26", "weather_condition: rain",
+          "  run: intervals", "  weather_high_f: open-meteo", "  weather_low_f: open-meteo", "  weather_precip_in: open-meteo",
+          "  weather_condition: open-meteo", `_synced_at: ${SYNCED_AT}`,
+        ],
+        removed: ["_synced_at: 2026-11-17T06:27:00-08:00"],
+      });
+      assert.equal(
+        await t.file("days/2026-11-09.md"),
+        [
+          "---", "date: 2026-11-09", "weight_lb: 171.1", "resting_hr: 50", "run: true",
+          "weather_high_f: 38", "weather_low_f: 33", "weather_precip_in: 0", "weather_condition: drizzle",
+          "_sources:", "  weight_lb: intervals", "  resting_hr: intervals", "  run: intervals",
+          "  weather_high_f: open-meteo", "  weather_low_f: open-meteo", "  weather_precip_in: open-meteo", "  weather_condition: open-meteo",
+          `_synced_at: ${SYNCED_AT}`, "---", "",
+        ].join("\n"),
+      );
+      // A day with a comment, keys of the user's own and notes: all of it is where it was.
+      assert.equal(
+        await t.file("days/2026-11-10.md"),
+        (await fixtureFile("days/2026-11-10.md"))
+          .replace("weather_high_f: 62", "weather_high_f: 41")
+          .replace("weather_low_f: 50", "weather_low_f: 36")
+          .replace("weather_condition: fog\n", "weather_condition: rain\nweather_precip_in: 0\n")
+          .replace("  weather_condition: open-meteo\n", "  weather_condition: open-meteo\n  weather_precip_in: open-meteo\n")
+          .replace("_synced_at: 2026-11-11T06:20:00-08:00", `_synced_at: ${SYNCED_AT}`),
+      );
+      // Nothing synced is shown as a habit, and the month is still drawn as it should be.
+      assert.equal(await t.count("tbody tr"), 11);
+      await checkDrawing(t);
+      await t.shot();
+
+      // A value set by hand survives the next sync. Sync is reached and pressed from the keyboard.
+      await t.click("sleep", 17);
+      await t.page.keyboard.type("5");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      await t.page.focus(".month .action");
+      await t.page.keyboard.press("Enter");
+      await t.told("Sync: nothing new.");
+      assert.equal(await t.cellText("sleep", 17), "5");
+      assert.match(await t.file(TODAY_FILE), /^sleep_h: 5$/m);
+      assert.match(await t.file(TODAY_FILE), /^  sleep_h: manual$/m);
+      const settled = await t.file(TODAY_FILE);
+
+      // A sync under way doesn't hold the grid up: a cell can be ticked, and an entry begun, while it runs.
+      await t.page.evaluate(() => {
+        window.wetware.write("days/2026-11-17.md", window.wetware.read("days/2026-11-17.md").replace("run: true\n", ""));
+        window.wetware.slowFetches(500);
+      });
+      await t.page.click(".month .action");
+      await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Syncing");
+      assert.equal(await t.page.$eval(".month .action", (el) => el.disabled), true);
+      await t.click("meditate", 17);
+      assert.equal(await t.state("meditate", 17), "done");
+      await t.click("weight", 17);
+      await t.page.keyboard.type("170");
+      await t.told("Sync: 1 day updated.");
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      await t.stateIs("run", 17, "done");
+      // The entry is still open with what was typed, and saves as usual.
+      assert.equal(await t.page.$eval(".grid-input", (el) => el.value), "170");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      assert.deepEqual(changed(settled, await t.file(TODAY_FILE)), { added: ["meditate: true", "weight_lb: 170", "  meditate: manual", "  weight_lb: manual"], removed: [] });
+      assert.equal(await t.state("meditate", 17), "done");
+      assert.equal(await t.cellText("weight", 17), "170");
+    },
+  },
+  {
+    name: "sync-no-sleep",
+    about: "an empty folder filled by sync: a run beside a night with no sleep data, and Lift and Climb left unset",
+    query: "folder=empty&sync=fixture&key=stored",
+    async run(t) {
+      // No location in a new folder, so no weather: 22 days from intervals.icu, and none for the two the watch was off.
+      await t.told("Sync: 22 days updated.");
+      await t.stateIs("run", 5, "done");
+      assert.equal(await t.state("sleep", 5), "no_data");
+      assert.equal(await t.state("run", 9), "done");
+      assert.equal(await t.state("sleep", 9), "no_data");
+      assert.equal(await t.cellText("sleep", 4), "8.1");
+      assert.equal(await t.state("run", 4), "missed"); // the watch was on, and there was no run
+      for (const day of [7, 8]) {
+        assert.equal(await t.state("run", day), "no_data");
+        assert.equal(await t.state("sleep", day), "no_data");
+      }
+      const paths = await t.paths();
+      assert.equal(paths.length, 23); // habits.yaml and 22 days
+      assert.ok(!paths.includes("days/2026-11-07.md") && !paths.includes("days/2026-11-08.md"), "a file was made for a day with no data");
+      assert.ok(paths.includes("days/2026-10-25.md"), "the seven days before the month were not synced");
+      assert.equal(await t.file("days/2026-11-05.md"), `---\ndate: 2026-11-05\nresting_hr: 53\nrun: true\n_sources:\n  resting_hr: intervals\n  run: intervals\n_synced_at: ${SYNCED_AT}\n---\n`);
+      // Lift and Climb: no day is ticked or crossed off, whatever intervals.icu had. Every past day reads "no data".
+      for (const habit of ["lift", "climb"]) {
+        assert.equal(await t.count(`.grid-cell[data-habit="${habit}"][data-state="no_data"]`), 16);
+        assert.equal(await t.count(`.grid-cell[data-habit="${habit}"][data-state="done"]`), 0);
+        assert.equal(await t.count(`.grid-cell[data-habit="${habit}"][data-state="missed"]`), 0);
+      }
+      for (const file of paths.filter((path) => path.startsWith("days/"))) {
+        assert.doesNotMatch(await t.file(file), /^(lift|climb):/m, `${file} has a value for a habit that isn't set up`);
+      }
+      // The weight intervals.icu had for the 9th is in, in pounds; the one it carried over from settings on the 4th is not.
+      assert.equal(await t.cellText("weight", 9), "171.1");
+      assert.equal(await t.state("weight", 4), "missed");
+      assert.equal(await t.countText("run"), "9/30");
+
+      // Drawn: the ✕ of the run and, under it in the same column, the dash of no sleep data.
+      await t.page.mouse.move(2, 2);
+      const m = await measure(t.page);
+      const px = await pixels(t.page);
+      const at = (habit, day) => m.cells.find((c) => c.habit === habit && c.day === day);
+      const cross = at("run", 5).mark.box;
+      const dash = at("sleep", 5).mark.box;
+      assert.ok(px.darkest(cross.cx, cross.cy) < INK, "the run has no ✕");
+      assert.ok(isGray(px.darkest(dash.cx, dash.cy)), "the night with no sleep data has no dash");
+      assert.ok(Math.abs(cross.cx - dash.cx) < 1, "the run and the night are not the same day");
+      assert.ok(px.lightest(dash.cx, at("sleep", 5).box.top + at("sleep", 5).box.height * 0.25) > PAPER, "the no-data box is not empty above its dash");
+      await t.shot();
+    },
+  },
+  {
+    name: "sync-no-key",
+    about: "no intervals.icu key: the weather still syncs, and being not connected is said once",
+    query: "sync=fixture&key=none&told=no",
+    async run(t) {
+      const once = `Sync: 24 days updated. ${NOT_CONNECTED}`;
+      await t.told(once);
+      assert.equal(await t.problem(), once);
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      // The weather is in; nothing from intervals.icu is, and it was asked once, not twice.
+      const today = await t.file(TODAY_FILE);
+      assert.match(today, /^weather_condition: rain$/m);
+      assert.match(today, /^  weather_high_f: open-meteo$/m);
+      assert.doesNotMatch(today, /^run:/m);
+      assert.equal(await t.state("run", 17), "pending");
+      assert.deepEqual(await t.fetches(), ["wellness 2026-10-25 2026-11-17", "weather 37.8 -122.27 2026-10-25 2026-11-17"]);
+      assert.equal((await t.syncState()).intervals_hint_shown, true);
+      await t.shot();
+
+      // The next time a folder opens, the sync runs again and doesn't say it again.
+      await t.nav("Settings");
+      await t.page.click(".row-value .action");
+      await t.page.waitForFunction(() => window.wetware.fetches().length === 4);
+      await t.nav("Month");
+      await t.ready();
+      await t.page.waitForFunction(() => document.querySelector(".sync-status").textContent === "Last synced 09:41");
+      assert.equal(await t.problem(), null);
+
+      // Asked for, it says where things stand.
+      await t.page.click(".month .action");
+      await t.told(`Sync: nothing new. ${NOT_CONNECTED}`);
+    },
+  },
+  {
+    name: "sync-key-rejected",
+    about: "a key intervals.icu turns down: said plainly, the weather still syncs, and a new key puts it right",
+    query: "sync=fixture&key=rejected",
+    async run(t) {
+      await t.told(`Sync: 24 days updated. ${KEY_REJECTED}`);
+      assert.match(await t.file(TODAY_FILE), /^weather_condition: rain$/m);
+      assert.doesNotMatch(await t.file(TODAY_FILE), /^run:/m);
+      await t.shot();
+
+      // With the weather out of reach as well, nothing was reached: the last-synced time stays what it was.
+      await t.page.evaluate(() => window.wetware.failWeather({ kind: "offline" }));
+      await t.page.click(".month .action");
+      await t.told(`Sync: ${KEY_REJECTED} Open-Meteo could not be reached. Check the internet connection, then try again.`);
+      assert.equal(await t.syncStatus(), "Last synced 09:41");
+      await t.page.evaluate(() => window.wetware.failWeather({ kind: "rate_limited", retry_after_secs: 3600 }));
+      await t.page.click(".month .action");
+      await t.told("Open-Meteo is limiting requests. Try again in a few minutes.");
+      await t.page.evaluate(() => window.wetware.failWeather(null));
+
+      // Settings says the same of the key when asked to test it. A new key is accepted.
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="intervals.icu API key"]');
+      await t.action("Test connection");
+      await t.page.waitForFunction(() => window.wetware.fetches().at(-1) === "activities 2026-08-19 2026-11-17");
+      await t.page.waitForFunction((text) => document.body.textContent.includes(text), {}, KEY_REJECTED);
+      assert.equal(await t.row("Connection"), KEY_REJECTED);
+      assert.equal(await t.row("Activity types"), null);
+      await t.page.type('input[aria-label="intervals.icu API key"]', "preview-key-two");
+      await t.page.keyboard.press("Enter");
+      await t.page.waitForFunction(() => ![...document.querySelectorAll(".row")].some((row) => row.firstElementChild.textContent === "Connection"));
+      await t.action("Test connection");
+      await t.page.waitForFunction(() => [...document.querySelectorAll(".row")].some((row) => row.firstElementChild.textContent === "Activity types"));
+      assert.equal(await t.row("Connection"), "Connected");
+
+      // And the next sync fills in what intervals.icu has.
+      await t.nav("Month");
+      await t.ready();
+      await t.page.click(".month .action");
+      await t.told("Sync: 11 days updated.");
+      await t.stateIs("run", 17, "done");
+      assert.equal(await t.problem(), "Sync: 11 days updated.");
+    },
+  },
+  {
+    name: "settings-connection",
+    about: "Settings tests the connection and lists the activity types found, so Lift and Climb can be set up",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      await t.told("Sync: 24 days updated.");
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="intervals.icu API key"]');
+      // Before any test: what isn't set up, and the Strava hint from the sync that just ran.
+      assert.equal(await t.row("Not set up"), "Lift and Climb");
+      assert.match(await t.rowNote("Not set up"), /No activity types yet, so sync leaves them alone\. In habits\.yaml, list the types that count under source_rule \/ activity_types\./);
+      assert.equal(await t.row("Strava"), "2 activities can't be read");
+      assert.match(await t.rowNote("Strava"), /Is your device connected to intervals\.icu directly, not through Strava\?$/);
+      assert.equal(await t.row("Connection"), null);
+
+      // From the keyboard: the key field, past Save (nothing to save), to Test connection.
+      await t.page.focus('input[aria-label="intervals.icu API key"]');
+      await t.page.keyboard.press("Tab");
+      assert.equal(await t.page.evaluate(() => document.activeElement.textContent), "Test connection");
+      await t.page.keyboard.press("Enter");
+      await t.page.waitForFunction(() => [...document.querySelectorAll(".row")].some((row) => row.firstElementChild.textContent === "Activity types"));
+      assert.equal(await t.row("Connection"), "Connected");
+      assert.equal(await t.row("Activity types"), "Run 12, WeightTraining 5, RockClimbing 2, Walk 1");
+      assert.match(await t.rowNote("Activity types"), /in the last 90 days\.$/);
+      assert.equal(await t.row("Strava"), "2 activities can't be read");
+      assert.equal((await t.fetches()).at(-1), "activities 2026-08-19 2026-11-17");
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      await t.shot();
+
+      // A key that is saved goes to the shell and is nowhere in the page, the data folder or the sync record after.
+      const secret = "preview-key-9f3a";
+      await t.page.type('input[aria-label="intervals.icu API key"]', secret);
+      await t.action("Save");
+      await t.page.waitForFunction(() => document.querySelector('input[aria-label="intervals.icu API key"]').value === "");
+      const kept = await t.page.evaluate(() => ({
+        page: document.documentElement.outerHTML + [...document.querySelectorAll("input")].map((input) => input.value).join("\n"),
+        files: window.wetware.paths().map((path) => window.wetware.read(path)).join("\n"),
+        record: JSON.stringify(window.wetware.syncState()),
+        storage: JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), document.cookie]),
+      }));
+      for (const [where, text] of Object.entries(kept)) assert.ok(!text.includes(secret), `the key is in the ${where}`);
+      // What the test found was about the old key: it is cleared.
+      assert.equal(await t.row("Connection"), null);
+      assert.equal(await t.row("Activity types"), null);
+    },
+  },
+  {
     name: "settings",
     about: "the Settings screen, and first run with no data folder",
     query: "folder=none",
@@ -974,6 +1258,29 @@ function tools(page, name, base) {
         return Math.max(0, ...sizes);
       }),
     countText: (habit) => page.$eval(`${cell(habit, 1)} ~ .grid-count`, (el) => el.textContent),
+    /** Waits for a cell to reach a state: after a sync, the grid reads the month again. */
+    stateIs: (habit, day, state) =>
+      page.waitForFunction((selector, wanted) => document.querySelector(selector)?.dataset.state === wanted, {}, cell(habit, day), state),
+    /** What the grid header says about syncing. */
+    syncStatus: () => page.$eval(".sync-status", (el) => el.textContent),
+    fetches: () => page.evaluate(() => window.wetware.fetches()),
+    syncState: () => page.evaluate(() => window.wetware.syncState()),
+    /** Goes to another screen by its name in the navigation. */
+    nav: (label) => page.evaluate((text) => [...document.querySelectorAll(".nav-item")].find((el) => el.textContent === text).click(), label),
+    /** Presses the action with this label on a Settings row. */
+    action: (label) => page.evaluate((text) => [...document.querySelectorAll(".row .action")].find((el) => el.textContent === text).click(), label),
+    /** The value of the Settings row with this label, without its note. Null if there is no such row. */
+    row: (label) =>
+      page.evaluate((text) => {
+        const row = [...document.querySelectorAll(".row")].find((el) => el.firstElementChild.textContent === text);
+        if (!row) return null;
+        return [...row.querySelector(".row-value").children].filter((el) => !el.classList.contains("row-note")).map((el) => el.textContent).join(" ");
+      }, label),
+    rowNote: (label) =>
+      page.evaluate((text) => {
+        const row = [...document.querySelectorAll(".row")].find((el) => el.firstElementChild.textContent === text);
+        return row?.querySelector(".row-note")?.textContent ?? null;
+      }, label),
     /** The message on the error line, or null. */
     problem: () => page.evaluate(() => document.querySelector(".notice").textContent || null),
     /** Waits for a message containing `text` to be on the message line. */
@@ -1015,6 +1322,11 @@ for (const scenario of chosen) {
   page.on("pageerror", (e) => errors.push(`uncaught: ${e.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  // The webview makes no network calls: everything it loads comes from the app itself.
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.protocol !== "data:" && url.host !== new URL(base).host) errors.push(`network: ${request.url()}`);
   });
   const t = tools(page, scenario.name, base);
   try {

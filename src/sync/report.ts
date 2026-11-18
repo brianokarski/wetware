@@ -13,11 +13,11 @@ export function problemText(source: SourceName, problem: SyncProblem): string {
     case "key_rejected":
       return "intervals.icu did not accept the API key. Paste it again in Settings; it is under Developer Settings on intervals.icu.";
     case "rate_limited":
-      return `${source} is limiting requests. Sync again in a few minutes.`;
+      return `${source} is limiting requests. Try again in a few minutes.`;
     case "offline":
-      return `${source} could not be reached. Check the internet connection, then sync again.`;
+      return `${source} could not be reached. Check the internet connection, then try again.`;
     case "unexpected":
-      return `${source} sent something this app can't use (${problem.detail}). Sync again later.`;
+      return `${source} sent something this app can't use (${problem.detail}). Try again later.`;
   }
 }
 

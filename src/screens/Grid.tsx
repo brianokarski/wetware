@@ -6,6 +6,7 @@ import {
   reason, sameMonth, shortNumber, weekdayInitial, withPatch, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
+import { lastSyncedLabel } from "../sync";
 
 interface Props {
   fs: DataFs;
@@ -21,6 +22,10 @@ interface Props {
   notify: (key: string, text: string) => void;
   /** Takes notices off the message line once what they were about has gone right. */
   settle: (...keys: string[]) => void;
+  /** Where syncing stands. `revision` counts up each time a sync has written day files. */
+  sync: { running: boolean; lastSynced: Date | null; revision: number };
+  /** Starts a sync. What comes of it is put on the message line. */
+  onSync: () => void;
 }
 
 /** The notice key for a month that couldn't be loaded. */
@@ -56,7 +61,7 @@ const ACCEPTS: Record<string, string> = {
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
+export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSync }: Props) {
   const [month, setMonth] = useState<YearMonth>(() => monthOf(today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
   const [wanted, setFocus] = useState<Position>(() => ({ row: 0, col: Number(today.slice(8)) - 1 }));
@@ -67,6 +72,8 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
   const inFlight = useRef(new Map<string, number>());
   /** Set when the keyboard closes an editor, so focus goes back to the cell it was in. */
   const refocus = useRef(false);
+  /** The month the grid last began loading, to tell a change of month from a sync landing. */
+  const loading = useRef("");
 
   const dates = monthDates(month);
   const rows = habits.filter((habit) => !habit.archived);
@@ -78,12 +85,23 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
 
   useEffect(() => {
     let stale = false;
-    setDays(null);
-    setEditing(null);
+    // Another month: start from nothing. The same month after a sync: it stays up, and usable, while it is read again.
+    const fresh = loading.current !== key;
+    loading.current = key;
+    if (fresh) {
+      setDays(null);
+      setEditing(null);
+    }
     loadMonth(fs, month).then(
       (loaded) => {
         if (stale) return;
-        setDays(loaded);
+        // A day with an edit on its way to disk keeps what it shows: that write's own result follows.
+        const pending = (date: string) => (inFlight.current.get(date) ?? 0) > 0;
+        setDays((shown) =>
+          fresh || !shown
+            ? loaded
+            : Object.fromEntries(Object.entries(loaded).map(([date, day]) => [date, pending(date) ? (shown[date] ?? day) : day])),
+        );
         // The month is here, and so is every day in it that could be read.
         const readable = Object.values(loaded).filter((day) => !day.error);
         settle(MONTH_NOTICE, ...readable.map((day) => dayNoticeKey(day.date)));
@@ -94,7 +112,7 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
       stale = true;
     };
     // `month` is a new object on every render; its key says whether it is a different month.
-  }, [fs, key]);
+  }, [fs, key, sync.revision]);
 
   const element = (at: Position) =>
     table.current?.querySelector<HTMLElement>(`[data-row="${at.row}"][data-col="${at.col}"]`) ?? null;
@@ -250,8 +268,18 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle }: Props) {
     <section className="month" aria-label={`${monthName(month)} ${month.year}`}>
       <header className="meta-row">
         <Mono>{month.year}</Mono>
-        <Mono>{dates.length} days</Mono>
-        <Mono muted>{when}</Mono>
+        <span className="meta-group mono">
+          <span>{dates.length} days</span>
+          <span className="muted">{when}</span>
+        </span>
+        <span className="meta-group mono">
+          <button type="button" className="action" disabled={sync.running} onClick={onSync}>
+            Sync
+          </button>
+          <span className="sync-status muted" role="status">
+            {sync.running ? "Syncing" : lastSyncedLabel(sync.lastSynced, today)}
+          </span>
+        </span>
         <span className="month-nav mono">
           <button type="button" className="choice" onClick={() => showMonth(previousMonth(month))}>
             ← {monthName(previousMonth(month))}

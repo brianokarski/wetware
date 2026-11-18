@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
   currentNotice, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, reason, saveSettings, setMorningPagesGoal,
   SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
   type Habit, type Notice, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
-import { useToday } from "./platform/clock";
+import { now, useToday } from "./platform/clock";
 import {
-  chooseDataRoot, getDataRoot, suggestedDataRoot, tauriFs, adoptSuggestedDataRoot,
+  chooseDataRoot, getDataRoot, suggestedDataRoot, syncSources, tauriFs, adoptSuggestedDataRoot,
 } from "./platform/tauri";
+import { useSync } from "./platform/useSync";
+import { testConnection } from "./sync";
 import { Grid } from "./screens/Grid";
 import { Settings } from "./screens/Settings";
 
@@ -38,12 +40,18 @@ export default function App() {
   const [habits, setHabits] = useState<Habit[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
+  /** Counts the times a data folder has loaded in full. */
+  const [loads, setLoads] = useState(0);
+  /** Whether the folder now open has had the sync that runs when a folder opens. */
+  const syncedOnOpen = useRef(false);
   const today = useToday();
 
   /** Puts a notice on the message line. It stays until `settle` is called with its key, or it is dismissed. */
   const notify = useCallback((key: string, text: string) => setNotices((list) => withNotice(list, key, text)), []);
   /** Takes notices off the line: what they were about has gone right. */
   const settle = useCallback((...keys: string[]) => setNotices((list) => withoutNotices(list, keys)), []);
+
+  const sync = useSync({ fs: tauriFs, sources: syncSources, habits, settings: dataRoot ? settings : null, notify, settle });
 
   /** Read (and on first use, seed) the data folder. */
   const loadFolder = useCallback(async () => {
@@ -59,7 +67,16 @@ export default function App() {
     if (file.skipped.length > 0) notify("habits", skippedNotice(file.skipped));
     setSettings(await loadSettings(tauriFs).catch(named(SETTINGS_FILE)));
     settle("folder");
+    setLoads((count) => count + 1);
   }, [notify, settle]);
+
+  // Sync runs when a folder opens: once its habits and settings are in, and once per folder.
+  const { run: runSync } = sync;
+  useEffect(() => {
+    if (loads === 0 || syncedOnOpen.current) return;
+    syncedOnOpen.current = true;
+    void runSync(false);
+  }, [loads, runSync]);
 
   useEffect(() => {
     (async () => {
@@ -77,7 +94,18 @@ export default function App() {
   const openFolder = async (path: string | null) => {
     if (!path) return;
     setRoot(path);
+    sync.forget();
+    syncedOnOpen.current = false;
     await loadFolder();
+  };
+  /**
+   * Before the shell is asked to change folders, a sync under way is called
+   * off: what it fetched was worked out for the folder it started on, and
+   * must not be written into another.
+   */
+  const changeFolder = (choose: () => Promise<string | null>) => {
+    sync.stop();
+    return choose().then(openFolder).catch(failed("folder"));
   };
 
   /** For a promise's catch: puts what went wrong on the message line, under `key`. */
@@ -125,6 +153,8 @@ export default function App() {
             onOpenDay={openDay}
             notify={notify}
             settle={settle}
+            sync={sync}
+            onSync={() => void sync.run(true)}
           />
         )}
         {screen === "settings" && (
@@ -132,9 +162,12 @@ export default function App() {
             dataRoot={dataRoot}
             suggestedRoot={suggestedRoot}
             settings={dataRoot ? settings : null}
+            habits={habits}
             pagesGoal={morningPagesGoal(habits)}
-            onChooseFolder={() => chooseDataRoot().then(openFolder).catch(failed("folder"))}
-            onUseSuggested={() => adoptSuggestedDataRoot().then(openFolder).catch(failed("folder"))}
+            withheld={sync.withheld}
+            onTestConnection={() => testConnection(syncSources, now())}
+            onChooseFolder={() => changeFolder(chooseDataRoot)}
+            onUseSuggested={() => changeFolder(adoptSuggestedDataRoot)}
             onSave={(patch) => saveSettings(tauriFs, patch).then(saved("settings", setSettings)).catch(failed("settings", "Settings were not saved."))}
             onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(saved("goal", setHabits)).catch(failed("goal", "The word goal was not saved."))}
           />

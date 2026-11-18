@@ -134,6 +134,21 @@ select {
   text-align: right;
 }
 
+/* Two or three things sharing one cell of a metadata row, such as an action and its status. */
+.meta-group {
+  display: flex;
+  align-items: baseline;
+  column-gap: var(--space-4);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.sync-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Navigation: a typographic list. Active black, the rest gray. */
 .nav {
   display: flex;

@@ -64,17 +64,17 @@ describe("the line a sync leaves", () => {
       "Sync: intervals.icu did not accept the API key. Paste it again in Settings; it is under Developer Settings on intervals.icu.",
     );
     expect(syncMessage(report({ intervals: failed({ kind: "offline" }), weather: failed({ kind: "offline" }) }), OPENED)).toBe(
-      "Sync: intervals.icu could not be reached. Check the internet connection, then sync again. Open-Meteo could not be reached. Check the internet connection, then sync again.",
+      "Sync: intervals.icu could not be reached. Check the internet connection, then try again. Open-Meteo could not be reached. Check the internet connection, then try again.",
     );
     expect(syncMessage(report({ changed: ["2026-11-17"], intervals: failed({ kind: "rate_limited", retry_after_secs: 90 }) }), ASKED)).toBe(
-      "Sync: 1 day updated. intervals.icu is limiting requests. Sync again in a few minutes.",
+      "Sync: 1 day updated. intervals.icu is limiting requests. Try again in a few minutes.",
     );
     expect(syncMessage(report({ weather: failed({ kind: "unexpected", detail: "HTTP 502" }) }), ASKED)).toBe(
-      "Sync: nothing new. Open-Meteo sent something this app can't use (HTTP 502). Sync again later.",
+      "Sync: nothing new. Open-Meteo sent something this app can't use (HTTP 502). Try again later.",
     );
     // Nothing was reached: no "nothing new", which would suggest it looked.
     expect(syncMessage(report({ intervals: failed({ kind: "offline" }), weather: NOT_SET_UP }), ASKED)).toBe(
-      "Sync: intervals.icu could not be reached. Check the internet connection, then sync again. Weather isn't logged until a latitude and longitude are set in Settings.",
+      "Sync: intervals.icu could not be reached. Check the internet connection, then try again. Weather isn't logged until a latitude and longitude are set in Settings.",
     );
   });
 
