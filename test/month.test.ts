@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  addMonths, dateKey, daysInMonth, longDate, monthAndDay, monthDates, monthKey, monthName, monthOf, nextMonth,
-  parseDateKey, previousMonth, sameMonth, weekday, weekdayInitial, weekdayName,
+  addDays, addMonths, dateKey, datesBetween, daysInMonth, localTimestamp, longDate, monthAndDay, monthDates, monthKey,
+  monthName, monthOf, nextMonth, parseDateKey, previousMonth, sameMonth, weekday, weekdayInitial, weekdayName,
 } from "../src/data";
 
 /**
@@ -145,4 +145,56 @@ describe("months", () => {
     });
   });
 
+});
+
+describe("days counted from a day", () => {
+  it.each(ZONES)("steps over month ends, year ends and leap days in %s", (zone) => {
+    inZone(zone, () => {
+      expect(addDays("2026-11-01", -7)).toBe("2026-10-25");
+      expect(addDays("2026-03-01", -7)).toBe("2026-02-22");
+      expect(addDays("2028-03-01", -1)).toBe("2028-02-29");
+      expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+      expect(addDays("2027-01-01", -1)).toBe("2026-12-31");
+      expect(addDays("2026-11-17", 0)).toBe("2026-11-17");
+      // Across the days the clocks change: still one calendar day each.
+      expect(addDays("2026-03-07", 2)).toBe("2026-03-09");
+      expect(addDays("2026-11-02", -2)).toBe("2026-10-31");
+    });
+  });
+
+  it("keeps early years as they are, and refuses what isn't a day", () => {
+    expect(addDays("0099-12-31", 1)).toBe("0100-01-01");
+    expect(addDays("0050-01-01", -1)).toBe("0049-12-31");
+    expect(() => addDays("2026-02-30", 1)).toThrow(RangeError);
+  });
+
+  it("lists every day between two days, both included", () => {
+    expect(datesBetween("2026-10-30", "2026-11-02")).toEqual(["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"]);
+    expect(datesBetween("2026-11-17", "2026-11-17")).toEqual(["2026-11-17"]);
+    expect(datesBetween("2026-11-18", "2026-11-17")).toEqual([]);
+    expect(datesBetween("2026-10-25", "2026-11-17")).toHaveLength(24);
+  });
+});
+
+describe("a moment as local time with its offset", () => {
+  const cases: [string, string][] = [
+    ["America/Los_Angeles", "2026-11-17T06:30:05-08:00"],
+    ["Asia/Kolkata", "2026-11-17T06:30:05+05:30"],
+    ["Pacific/Kiritimati", "2026-11-17T06:30:05+14:00"],
+    ["UTC", "2026-11-17T06:30:05+00:00"],
+  ];
+  it.each(cases)("in %s", (zone, expected) => {
+    inZone(zone, () => {
+      const stamp = localTimestamp(new Date(2026, 10, 17, 6, 30, 5, 900));
+      expect(stamp).toBe(expected);
+      // It names the same moment, to the second.
+      expect(new Date(stamp).getTime()).toBe(new Date(2026, 10, 17, 6, 30, 5).getTime());
+    });
+  });
+
+  it("follows daylight saving", () => {
+    inZone("America/Los_Angeles", () => {
+      expect(localTimestamp(new Date(2026, 6, 4, 21, 5, 0))).toBe("2026-07-04T21:05:00-07:00");
+    });
+  });
 });

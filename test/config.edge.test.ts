@@ -253,6 +253,23 @@ describe("M2 review SF-4: a habit's day key has to be its own", () => {
     expect(parseHabitsFile("habits:\n  - id: sleep_h\n    type: tag\n  - id: sleep\n    type: number\n    unit: h\n").skipped).toEqual([]);
   });
 
+  it("keeps what sync logs by itself out of a habit's reach", () => {
+    const taken = ["hrv", "resting_hr", "sleep_score", "weather_condition"];
+    const withUnit = [["weather_high", "f"], ["weather_low", "c"], ["weather_precip", "in"], ["weather_precip", "mm"]];
+    const raw = [
+      "habits:",
+      ...taken.map((id) => `  - id: ${id}\n    type: number`),
+      ...withUnit.map(([id, unit]) => `  - id: ${id}\n    type: number\n    unit: ${unit}`),
+      // The same words under another unit are the habit's own.
+      "  - id: hrv\n    name: HRV trend\n    type: number\n    unit: ms",
+      "",
+    ].join("\n");
+    const { habits, skipped } = parseHabitsFile(raw);
+    expect(habits.map((h) => h.id)).toEqual(["hrv"]);
+    expect(skipped.map((s) => s.id)).toEqual([...taken, ...withUnit.map(([id]) => id)]);
+    for (const entry of skipped) expect(entry.reason).toMatch(/a key the app keeps for itself$/);
+  });
+
   it("refuses to add or change a habit into a key that is taken, writing nothing", async () => {
     const raw = "habits:\n  - id: sleep\n    name: Sleep\n    type: number\n    unit: h\n  - id: nap\n    type: number\n    unit: min\n";
     const fs = habitsFs(raw);

@@ -101,6 +101,60 @@ describe("writes to one file run one at a time", () => {
   });
 });
 
+describe("a change worked out from the day as it is on disk", () => {
+  const path = "days/2026-11-17.md";
+
+  it("sees an edit that was queued before it, however long the read takes", async () => {
+    const fs = slowFs({ [path]: "---\ndate: 2026-11-17\n---\n" });
+    const seen: unknown[] = [];
+    await Promise.all([
+      writeDay(fs, "2026-11-17", { values: { sleep_h: 5 }, sources: { sleep_h: "manual" } }),
+      writeDay(fs, "2026-11-17", (day) => {
+        seen.push(day.values.sleep_h, day.sources.sleep_h);
+        return day.sources.sleep_h === "manual" ? null : { values: { sleep_h: 7.7 }, sources: { sleep_h: "intervals" } };
+      }),
+    ]);
+    expect(seen).toEqual([5, "manual"]);
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-17\nsleep_h: 5\n_sources:\n  sleep_h: manual\n---\n");
+    expect(fs.writes).toBe(1);
+    expect(fs.busiest).toBe(1);
+  });
+
+  it("writes nothing and creates no file when the change is null", async () => {
+    const fs = slowFs();
+    const day = await writeDay(fs, "2026-11-17", () => null);
+    expect(day).toMatchObject({ date: "2026-11-17", values: {}, error: null });
+    expect(fs.files.size).toBe(0);
+    expect(fs.writes).toBe(0);
+  });
+
+  it("is given an empty day when there is no file, and the file as it reads when there is", async () => {
+    const fs = slowFs({ [path]: "---\nmood: 4\ncaffeine_mg: 180\n---\n\nnotes\n" });
+    await writeDay(fs, "2026-11-17", (day) => {
+      expect(day.values).toEqual({ mood: 4, caffeine_mg: 180 });
+      expect(day.notes).toBe("notes\n");
+      return { values: { run: true } };
+    });
+    await writeDay(fs, "2026-11-18", (day) => {
+      expect(day).toMatchObject({ values: {}, sources: {}, body: "" });
+      return { values: { run: true } };
+    });
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-17\nmood: 4\ncaffeine_mg: 180\nrun: true\n---\n\nnotes\n");
+    expect(fs.files.get("days/2026-11-18.md")).toBe("---\ndate: 2026-11-18\nrun: true\n---\n");
+  });
+
+  it("leaves a file that needs fixing alone, and the next change still runs", async () => {
+    const broken = "---\nmood: 1\nmood: 2\n---\n";
+    const fs = slowFs({ [path]: broken });
+    await expect(writeDay(fs, "2026-11-17", (day) => {
+      expect(day.error).toMatch(/Map keys must be unique/);
+      return { values: { run: true } };
+    })).rejects.toThrow(/Map keys must be unique/);
+    expect(fs.files.get(path)).toBe(broken);
+    await expect(writeDay(fs, "2026-11-17", () => null)).resolves.toMatchObject({ date: "2026-11-17" });
+  });
+});
+
 describe("inTurn", () => {
   it("runs tasks for one path in the order they were queued", async () => {
     const fs = {};

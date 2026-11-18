@@ -67,6 +67,35 @@ export const previousMonth = (ym: YearMonth) => addMonths(ym, -1);
 export const nextMonth = (ym: YearMonth) => addMonths(ym, 1);
 export const sameMonth = (a: YearMonth, b: YearMonth) => a.year === b.year && a.month === b.month;
 
+/** The day `count` days after `key` (before it, if negative). Calendar arithmetic only: no clock, no time zone. */
+export function addDays(key: string, count: number): string {
+  const parts = parseDateKey(key);
+  if (!parts) throw new RangeError(`Not a date: ${key}`);
+  const date = new Date(0);
+  // Sets the year as given (years 0 to 99 included) and carries days over month and year ends.
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day + count);
+  return `${pad(date.getUTCFullYear(), 4)}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+/** Every day from `oldest` to `newest`, both included, in order. Empty if `newest` is the earlier one. */
+export function datesBetween(oldest: string, newest: string): string[] {
+  const dates: string[] = [];
+  for (let date = oldest; date <= newest; date = addDays(date, 1)) dates.push(date);
+  return dates;
+}
+
+/**
+ * A moment as local time with its offset from UTC, to the second:
+ * `2026-11-17T06:30:00-08:00`. This is how `_synced_at` is written (SPEC §6.2).
+ */
+export function localTimestamp(date: Date): string {
+  const offset = -date.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  const zone = `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()].map((n) => pad(n)).join(":");
+  return `${dateKey(date)}T${time}${zone}`;
+}
+
 /** 0 for Sunday to 6 for Saturday. */
 export function weekday(key: string): number {
   return localDate(key).getDay();

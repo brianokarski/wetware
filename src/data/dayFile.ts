@@ -304,11 +304,25 @@ export async function readDay(fs: DataFs, date: string): Promise<Day> {
   return parseDay(await fs.read(dayPath(date)), date);
 }
 
-/** Reads, patches and writes one day. Calls for the same day run one at a time. */
-export function writeDay(fs: DataFs, date: string, patch: DayPatch): Promise<Day> {
+/**
+ * A change to a day: a patch, or a function that works the patch out from the
+ * day as it is on disk at the moment of writing. The function form is for a
+ * change that depends on what is there, such as sync, which must not write
+ * over a value set by hand a moment before. Returning null writes nothing.
+ */
+export type DayChange = DayPatch | ((day: Day) => DayPatch | null);
+
+/**
+ * Reads, patches and writes one day. Calls for the same day run one at a
+ * time, and a function given as the change is called inside that turn. A file
+ * is only written if its text changes, and only created if there is a patch.
+ */
+export function writeDay(fs: DataFs, date: string, change: DayChange): Promise<Day> {
   const path = dayPath(date);
   return inTurn(fs, path, async () => {
     const raw = await fs.read(path);
+    const patch = typeof change === "function" ? change(parseDay(raw, date)) : change;
+    if (patch === null) return parseDay(raw, date);
     const next = updateDayFile(raw, date, patch);
     if (next !== raw) await fs.write(path, next);
     return parseDay(next, date);
