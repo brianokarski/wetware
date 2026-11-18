@@ -13,8 +13,10 @@ interface Props {
   habits: Habit[];
   /** Today's date key. */
   today: string;
-  /** Opens a day in the day view. Days that haven't come yet can't be opened. */
+  /** Asks for a day to be opened in the day view. Whether it can be (not a day still to come) is decided there. */
   onOpenDay: (date: string) => void;
+  /** Called once the grid has opened at `openAt`. */
+  onArrive: () => void;
   /**
    * A day to open the grid on, with the keyboard on its header: the day the
    * day view was showing when it was closed. Null: this month, at today.
@@ -59,7 +61,7 @@ const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, openAt, notify, settle, sync, onSync }: Props) {
+export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, settle, sync, onSync }: Props) {
   const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt ?? today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
   const [wanted, setFocus] = useState<Position>(() =>
@@ -145,6 +147,7 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, notify, settle, syn
     if (returning.current && element(focus)) {
       returning.current = false;
       element(focus)?.focus();
+      onArrive();
     }
   });
 
@@ -368,7 +371,7 @@ export function Grid({ fs, habits, today, onOpenDay, openAt, notify, settle, syn
                     aria-disabled={date > today || undefined}
                     title={day?.error ? `${dayPath(date)}: ${day.error}` : undefined}
                     onFocus={() => setFocus({ row: HEADER_ROW, col })}
-                    onClick={() => date <= today && onOpenDay(date)}
+                    onClick={() => onOpenDay(date)}
                   >
                     <span className="grid-weekday" aria-hidden="true">{weekdayInitial(date)}</span>
                     <span aria-hidden="true">{Number(date.slice(8))}</span>

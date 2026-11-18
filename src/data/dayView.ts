@@ -4,11 +4,12 @@
  * left out of sight: a key is a habit's, or the app's own log, or it is
  * listed among the other properties.
  */
-import { dayTags, isSynced } from "./cells";
-import { tagList, type Day, type DayPatch, type DayValue } from "./dayFile";
+import { dayTags } from "./cells";
+import type { Day, DayPatch, DayValue } from "./dayFile";
 import { TAGS_KEY, VITALS_KEYS, WEATHER_KEYS } from "./dayKeys";
 import { dayKey, type Habit } from "./habits";
 import type { Units } from "./settings";
+import { isDict } from "./yamlPatch";
 
 const own = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 
@@ -50,13 +51,23 @@ export function valueText(value: unknown): string {
   return String(value);
 }
 
+const isTagText = (item: unknown) => typeof item === "string" || typeof item === "number";
+
 /**
- * What a day holds beside the values of the habits on show.
+ * What a day holds beside the values of the habits on show. Between the
+ * habits' rows and these two lists, everything in the frontmatter is shown
+ * somewhere.
  *
  * `logged`: HRV, resting heart rate, sleep score and the weather, where the
- * day has them. `other`: every remaining frontmatter key, in the file's
- * order. That is the user's own keys, the values of habits that are archived
- * (hidden, with their data kept), and any tags that no tag habit shows.
+ * day has a value for them.
+ *
+ * `other`: the rest, in the file's order, as written.
+ * - The user's own keys, and the values of habits that are archived.
+ * - A logged key that holds nothing (`hrv: null`).
+ * - Whatever is in `tags` that no tag habit shows, text or not.
+ * - The file's bookkeeping: `_synced_at`, a `date` that isn't the day the
+ *   file is named for, and any `_sources` entry that no row shows (its key
+ *   has no row here, or what it says isn't text).
  */
 export function dayParts(habits: Habit[], day: Day): { logged: LoggedValue[]; other: OtherProperty[] } {
   const logged = LOGGED.filter(({ key }) => own(day.values, key) && day.values[key] !== null).map((entry) => ({
@@ -69,18 +80,51 @@ export function dayParts(habits: Habit[], day: Day): { logged: LoggedValue[]; ot
   const habitKeys = new Set(shown.filter((habit) => habit.type !== "tag").map(dayKey));
   const tagHabits = new Set(shown.filter((habit) => habit.type === "tag").map((habit) => habit.id));
   const loggedKeys = new Set(LOGGED.map(({ key }) => key));
+  /** The keys whose rows show where their value came from. */
+  const sourced = new Set([...habitKeys, ...logged.map(({ key }) => key)]);
+
   const other: OtherProperty[] = [];
-  for (const [key, value] of Object.entries(day.values)) {
-    if (habitKeys.has(key) || loggedKeys.has(key)) continue;
-    if (key === TAGS_KEY && (Array.isArray(value) || typeof value === "string" || typeof value === "number")) {
-      // The tags a tag habit shows are in its row. The rest are listed here.
-      const rest = tagList(value).filter((tag) => !tagHabits.has(tag));
-      if (rest.length > 0) other.push({ key, text: valueText(rest) });
-      continue;
+  const list = (key: string, value: unknown) => other.push({ key, text: valueText(value) });
+  for (const [key, value] of Object.entries(day.raw)) {
+    if (key === "date") {
+      if (valueText(value) !== day.date) list(key, value);
+    } else if (key === "_sources") {
+      if (!isDict(value)) list(key, value);
+      else {
+        for (const [entry, source] of Object.entries(value)) {
+          if (!sourced.has(entry) || typeof source !== "string") list(`_sources.${entry}`, source);
+        }
+      }
+    } else if (habitKeys.has(key)) {
+      // In its habit's row, readable as that habit's type or not.
+    } else if (loggedKeys.has(key)) {
+      if (value === null) list(key, value);
+    } else if (key === TAGS_KEY && (Array.isArray(value) || isTagText(value))) {
+      // The tags a tag habit shows are in its row. The rest are listed here, whatever they are.
+      const items = Array.isArray(value) ? value : [value];
+      const rest = items.filter((item) => !(isTagText(item) && tagHabits.has(String(item).trim())));
+      if (rest.length > 0) list(key, rest);
+    } else {
+      list(key, value);
     }
-    other.push({ key, text: valueText(value) });
   }
   return { logged, other };
+}
+
+/**
+ * What the file holds under a habit's key when it isn't something a habit
+ * of that type can hold: text where a number goes (`weight_lb: 182 lb`), a
+ * list, a word where true or false goes. The cell reads as empty; this is
+ * the value as written, to be shown beside it. Null when the key is absent,
+ * empty, or readable.
+ */
+export function unreadableValue(habit: Habit, day: Day): string | null {
+  if (habit.type === "tag") return null;
+  const key = dayKey(habit);
+  const raw = own(day.values, key) ? day.values[key] : null;
+  if (raw === null) return null;
+  const readable = habit.type === "check" ? typeof raw === "boolean" : typeof raw === "number" && Number.isFinite(raw);
+  return readable ? null : valueText(raw);
 }
 
 /**
@@ -94,17 +138,6 @@ export function valueSource(habit: Habit, day: Day): string | null {
   const key = dayKey(habit);
   if (own(day.sources, key)) return day.sources[key];
   return own(day.values, key) && day.values[key] !== null ? "unrecorded" : null;
-}
-
-/**
- * Whether the habit's value on this day is one sync is keeping its hands off
- * and could fill again: a synced habit, with a value (or a cleared cell) set
- * by hand, or with no source on record.
- */
-export function holdsBackSync(habit: Habit, day: Day): boolean {
-  if (habit.type === "tag" || !isSynced(habit)) return false;
-  const source = valueSource(habit, day);
-  return source === "manual" || source === "unrecorded";
 }
 
 /**

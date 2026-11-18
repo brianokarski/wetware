@@ -564,11 +564,6 @@ textarea {
   gap: var(--space-3);
 }
 
-/* The view holds the keyboard when it opens, so that Escape works at once. It is not itself a stop. */
-.day:focus {
-  outline: none;
-}
-
 .day-columns {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -583,6 +578,12 @@ textarea {
 
 .day .row {
   grid-template-columns: var(--col-label-day) minmax(0, 1fr);
+}
+
+/* A long value with nowhere to break (a URL, a hash) breaks where it must, inside its own table. */
+.day .row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Where a value came from: at the far end of its row. */

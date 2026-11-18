@@ -121,21 +121,41 @@ function wellnessTargets(habits: Habit[]): WellnessTarget[] {
   return targets;
 }
 
+/** Whether a reading of this wellness field can be put in the habit's unit at all. */
+function hasUnitFor(field: string, habit: Habit): boolean {
+  if (field === "weight") return habit.unit === "kg" || habit.unit === "lb";
+  if (/Secs$/.test(field)) return habit.unit === "h" || habit.unit === "min";
+  return true;
+}
+
+/**
+ * Whether a sync could write this habit's own key on this day: the habit is
+ * one intervals.icu fills, its rule is set up (activity types to match, or a
+ * wellness field it can convert), and the day is inside the range a sync
+ * covers. Whether it then does depends on what the source has for that day.
+ *
+ * The Weight habit doesn't count. It is a manual habit that sync only fills
+ * on days nothing was entered, not one whose value sync keeps.
+ */
+export function syncCovers(habit: Habit, date: string, range: SyncRange): boolean {
+  if (date < range.oldest || date > range.newest) return false;
+  if (activityRule(habit) !== null) return true;
+  if (habit.source !== "intervals") return false;
+  return wellnessTargets([habit]).some((target) => target.habit === habit && hasUnitFor(target.field, habit));
+}
+
 /**
  * A wellness reading in the habit's unit, or null if there is no saying what
  * that would be. intervals.icu keeps weight in kilograms and durations in
  * seconds; everything else is already a plain count, score or rate.
  */
 function inHabitUnit(field: string, value: number, habit: Habit): number | null {
+  if (!hasUnitFor(field, habit)) return null;
   let converted: number;
   if (field === "weight") {
-    if (habit.unit === "kg") converted = round(value, 1);
-    else if (habit.unit === "lb") converted = round(value * LB_PER_KG, 1);
-    else return null;
+    converted = habit.unit === "kg" ? round(value, 1) : round(value * LB_PER_KG, 1);
   } else if (/Secs$/.test(field)) {
-    if (habit.unit === "h") converted = round(value / 3600, 1);
-    else if (habit.unit === "min") converted = round(value / 60, 0);
-    else return null;
+    converted = habit.unit === "h" ? round(value / 3600, 1) : round(value / 60, 0);
     // A few seconds of sleep is no record of a night. Nothing is written, and the cell reads "no data".
     if (converted === 0) return null;
   } else {
@@ -254,8 +274,26 @@ const own = (record: object, key: string) => Object.prototype.hasOwnProperty.cal
  * was typed into the file by hand.
  */
 function mayWrite(day: Day, want: { key: string; source: SyncSource }): boolean {
-  if (own(day.sources, want.key)) return day.sources[want.key] === want.source;
-  return !own(day.values, want.key) || day.values[want.key] === null;
+  return syncHold(day, want.key, want.source) === null;
+}
+
+/** What in a day file keeps sync from writing a key. */
+export type SyncHold =
+  /** `_sources` says the value was set by hand. */
+  | { by: "manual" }
+  /** `_sources` says nothing of a value that is there: typed into the file, as far as sync can tell. */
+  | { by: "unrecorded" }
+  /** `_sources` names some other source. */
+  | { by: "other"; source: string };
+
+/** Why sync, writing as `source`, would leave `key` alone in this day. Null if it wouldn't. */
+export function syncHold(day: Day, key: string, source: SyncSource): SyncHold | null {
+  if (own(day.sources, key)) {
+    const recorded = day.sources[key];
+    if (recorded === source) return null;
+    return recorded === "manual" ? { by: "manual" } : { by: "other", source: recorded };
+  }
+  return own(day.values, key) && day.values[key] !== null ? { by: "unrecorded" } : null;
 }
 
 /**

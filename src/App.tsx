@@ -11,7 +11,7 @@ import {
 } from "./platform/tauri";
 import { useSync } from "./platform/useSync";
 import { testConnection } from "./sync";
-import { DayPanel } from "./screens/DayPanel";
+import { DayPanel, type DayNav } from "./screens/DayPanel";
 import { Grid } from "./screens/Grid";
 import { Settings } from "./screens/Settings";
 
@@ -48,8 +48,17 @@ export default function App() {
   const syncedOnOpen = useRef(false);
   /** The day open in the day view, in place of the month grid. Null: the grid is showing. */
   const [day, setDay] = useState<string | null>(null);
-  /** The day the grid opens on, with focus on its header: the one the day view was last showing. */
+  /**
+   * The day the grid opens on next, with focus on its header: the one the day
+   * view was showing when it closed. Used once: it is cleared as soon as the
+   * grid has opened there, so another month, or another screen and back, is
+   * not pulled back to it.
+   */
   const [returnTo, setReturnTo] = useState<string | null>(null);
+  /** Which control of the day view's header has the keyboard when a day opens. */
+  const [dayArrive, setDayArrive] = useState<DayNav>("month");
+  /** The day view's say on whether it can be left. Null when no day is open. */
+  const leaveGuard = useRef<(() => boolean) | null>(null);
   const today = useToday();
 
   /** Puts a notice on the message line. It stays until `settle` is called with its key, or it is dismissed. */
@@ -123,17 +132,29 @@ export default function App() {
     settle(key);
   };
 
-  /** Opens a day in place of the month. A day that hasn't come yet has nothing to open. */
-  const openDay = useCallback((date: string) => {
-    if (date <= dateKey(now())) setDay(date);
-  }, []);
+  /** Whether the day view, if one is open, can be left. It says why on the message line when it can't. */
+  const mayLeave = useCallback(() => leaveGuard.current === null || leaveGuard.current(), []);
+  /**
+   * Opens a day in place of the month, or in place of the day now open. A
+   * day that hasn't come yet has nothing to open: this is the one place that
+   * is decided. `via` is the control used, which has the keyboard in the day that opens.
+   */
+  const openDay = useCallback(
+    (date: string, via: DayNav = "month") => {
+      if (date > dateKey(now()) || !mayLeave()) return;
+      setDayArrive(via);
+      setDay(date);
+    },
+    [mayLeave],
+  );
   /** Back to the month, with the keyboard on the header of the day that was open. */
   const closeDay = useCallback(() => {
-    setDay((open) => {
-      if (open) setReturnTo(open);
-      return null;
-    });
-  }, []);
+    if (!mayLeave()) return;
+    if (day !== null) setReturnTo(day);
+    setDay(null);
+  }, [day, mayLeave]);
+  /** The grid has opened where it was asked to. From here on it opens where it always does. */
+  const arrived = useCallback(() => setReturnTo(null), []);
 
   if (!ready) return null;
   const notice = currentNotice(notices);
@@ -169,6 +190,8 @@ export default function App() {
             today={today}
             temperature={settings?.units.temperature ?? "F"}
             revision={sync.revision}
+            arrive={dayArrive}
+            leaveGuard={leaveGuard}
             onClose={closeDay}
             onGo={openDay}
             notify={notify}
@@ -182,6 +205,7 @@ export default function App() {
             habits={habits}
             today={today}
             openAt={returnTo}
+            onArrive={arrived}
             onOpenDay={openDay}
             notify={notify}
             settle={settle}
@@ -216,7 +240,7 @@ export default function App() {
               aria-current={item.id === screen ? "page" : undefined}
               disabled={item.id === null || (item.id === "month" && !dataRoot)}
               onClick={() => {
-                if (!item.id) return;
+                if (!item.id || !mayLeave()) return;
                 // "Month" is the month: from a day, it goes back to the grid.
                 if (item.id === "month") closeDay();
                 setScreen(item.id);

@@ -36,9 +36,6 @@ export interface Cell {
  */
 const EXTERNAL_SOURCES = new Set(["intervals", "weather", "open-meteo"]);
 
-/** Whether the habit is filled by a source outside the app, so that sync can put a value back. */
-export const isSynced = (habit: Habit): boolean => EXTERNAL_SOURCES.has(habit.source);
-
 /** The day's tags (SPEC §6.2). A `tag` habit is on when its id is one of them. */
 export function dayTags(day: Day): string[] {
   return tagList(day.values[TAGS_KEY]);

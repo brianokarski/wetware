@@ -93,11 +93,7 @@ impl Shell {
     /// that got it reads or writes there even if the folder changes meanwhile.
     fn root_for(&self, folder: u64) -> CmdResult<PathBuf> {
         let open = self.open.lock().map_err(err)?;
-        let root = open.config.data_root.clone().ok_or(NO_FOLDER)?;
-        if folder != open.folder {
-            return Err(FOLDER_CHANGED.into());
-        }
-        Ok(root)
+        open.checked(folder).map(Path::to_path_buf)
     }
 
     /// Make `root` the data folder under a new number. `persist` writes the
@@ -111,24 +107,34 @@ impl Shell {
         Ok(OpenFolder { path: shown(&root), id: open.folder })
     }
 
+    /// What a sync of the folder numbered `folder` last recorded. The number
+    /// is checked and the record read under one lock, so the record handed
+    /// back is always that folder's own.
     fn sync_state(&self, folder: u64) -> CmdResult<SyncState> {
-        self.root_for(folder)?;
-        Ok(self.open.lock().map_err(err)?.config.sync.clone())
+        let open = self.open.lock().map_err(err)?;
+        open.checked(folder)?;
+        Ok(open.config.sync.clone())
     }
 
     /// Record what a sync of the folder numbered `folder` has to remember.
     fn set_sync_state(&self, folder: u64, state: SyncState, persist: &dyn Fn(&AppConfig) -> CmdResult<()>) -> CmdResult<()> {
         let mut open = self.open.lock().map_err(err)?;
-        if open.config.data_root.is_none() {
-            return Err(NO_FOLDER.into());
-        }
-        if folder != open.folder {
-            return Err(FOLDER_CHANGED.into());
-        }
+        open.checked(folder)?;
         let next = AppConfig { sync: state, ..open.config.clone() };
         persist(&next)?;
         open.config = next;
         Ok(())
+    }
+}
+
+impl Open {
+    /// The data folder, if `folder` is the number of the one now open.
+    fn checked(&self, folder: u64) -> CmdResult<&Path> {
+        let root = self.config.data_root.as_deref().ok_or(NO_FOLDER)?;
+        if folder != self.folder {
+            return Err(FOLDER_CHANGED.into());
+        }
+        Ok(root)
     }
 }
 
@@ -443,6 +449,39 @@ mod tests {
         assert_eq!(shell.set_sync_state(old, late, &kept), Err(FOLDER_CHANGED.into()));
         assert_eq!(shell.sync_state(old), Err(FOLDER_CHANGED.into()));
         assert_eq!(shell.sync_state(new).unwrap(), fresh);
+    }
+
+    #[test]
+    fn the_sync_record_is_read_under_the_lock_that_checks_the_number() {
+        // Many folder changes racing many reads: a read is either refused or is the record of the
+        // folder whose number it carried. Each folder's record is marked with its own number.
+        let folders = Folders::new("one-lock");
+        let shell = std::sync::Arc::new(Shell::new(AppConfig::default()));
+        let first = shell.open_folder(folders.a.clone(), &kept).unwrap().id;
+        shell.set_sync_state(first, SyncState { last_synced_ms: Some(first), intervals_hint_shown: false }, &kept).unwrap();
+        let changer = {
+            let (shell, a, b) = (shell.clone(), folders.a.clone(), folders.b.clone());
+            std::thread::spawn(move || {
+                for round in 0..2000 {
+                    let id = shell.open_folder(if round % 2 == 0 { b.clone() } else { a.clone() }, &kept).unwrap().id;
+                    shell.set_sync_state(id, SyncState { last_synced_ms: Some(id), intervals_hint_shown: false }, &kept).unwrap();
+                }
+            })
+        };
+        let mut read = 0;
+        while !changer.is_finished() {
+            let Some(opened) = shell.opened().unwrap() else { continue };
+            match shell.sync_state(opened.id) {
+                // Read between a folder's opening and its record being marked, it is the fresh record of a new folder.
+                Ok(state) => {
+                    assert!(state.last_synced_ms.is_none() || state.last_synced_ms == Some(opened.id), "{state:?} for folder {}", opened.id);
+                    read += 1;
+                }
+                Err(refusal) => assert_eq!(refusal, FOLDER_CHANGED),
+            }
+        }
+        changer.join().unwrap();
+        assert!(read > 0);
     }
 
     #[test]
