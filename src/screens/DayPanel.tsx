@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { Mono, Row, Table } from "../components/primitives";
 import {
   addDays, cellNoticeKey, cellPatch, cellState, dayKey, dayParts, dayPath, describeCell, habitHint, longDate, monthAndDay,
-  NotesChangedError, parseCellInput, parseDay, readDay, reason, shortDate, TYPED_INPUT, unreadableValue, useSyncedPatch,
-  valueSource, valueText, weatherLine, weekdayName, withPatch, writeDay, writeNotes,
-  type Cell, type CellValue, type DataFs, type Day, type DayPatch, type Habit, type Units,
+  NotesChangedError, PAGES_SOURCE, pagesWords, parseCellInput, parseDay, readDay, reason, roomKeepsCount, shortDate, takeRoomCount,
+  TYPED_INPUT, unreadableValue, useSyncedPatch, valueSource, valueText, weatherLine, weekdayName, withPatch, writeDay, writeNotes,
+  type Cell, type CellValue, type DataFs, type Day, type DayPatch, type Habit, type NotesBase, type Units,
 } from "../data";
 import { useAutosave } from "../platform/useAutosave";
 import { handBack, handBackNote } from "../sync";
@@ -47,6 +47,8 @@ const notesNoticeKey = (date: string) => `notes:${date}`;
  */
 export function DayPanel({ fs, habits, date, today, temperature, revision, arrive, leaveGuard, onClose, onGo, notify, settle }: Props) {
   const [day, setDay] = useState<Day | null>(null);
+  /** How many words this day's morning pages hold. A number is all this view is given of them. */
+  const [pagesHeld, setPagesHeld] = useState(0);
   const nav = useRef<HTMLSpanElement>(null);
   /** Changes made here so far, and how many are still on their way to disk. */
   const edits = useRef({ count: 0, inFlight: 0 });
@@ -55,6 +57,8 @@ export function DayPanel({ fs, habits, date, today, temperature, revision, arriv
   const read = useCallback(() => {
     const began = edits.current.count;
     const unread = (e: unknown): Day => ({ ...parseDay(null, date), error: `The file could not be read: ${reason(e)}.` });
+    // Whether the day has pages decides whether a count set by hand can be handed back to the writing room.
+    pagesWords(fs, date).then(setPagesHeld, () => setPagesHeld(0));
     return readDay(fs, date)
       .catch(unread)
       .then((loaded) => {
@@ -99,6 +103,22 @@ export function DayPanel({ fs, habits, date, today, temperature, revision, arriv
   };
 
   const setValue = (habit: Habit, value: CellValue) => change(cellPatch(habit, value), cellNoticeKey(date, habit.id), habit.name);
+
+  /** Hands the Morning pages count back to the writing room: it becomes what the day's pages hold, and the room keeps it. */
+  const useRoomCount = (habit: Habit) => {
+    if (!day || day.error) return;
+    const notice = cellNoticeKey(date, habit.id);
+    tracked(takeRoomCount(fs, date, habit)).then(
+      (saved) => {
+        if (idle()) setDay(saved);
+        settle(notice);
+      },
+      (e) => {
+        notify(notice, `${habit.name} on ${monthAndDay(date)} was not changed. ${reason(e)}`);
+        if (idle()) void read();
+      },
+    );
+  };
 
   // Escape goes back to the month from anywhere in the view, and from nowhere in particular too. A field
   // with typing to take back takes it back first, and says so by marking the key as dealt with.
@@ -177,6 +197,8 @@ export function DayPanel({ fs, habits, date, today, temperature, revision, arriv
                   today={today}
                   onSet={(value) => setValue(habit, value)}
                   onUseSynced={() => change(useSyncedPatch(habit), cellNoticeKey(date, habit.id), habit.name)}
+                  roomWords={habit.source === PAGES_SOURCE && !roomKeepsCount(habit, day) ? pagesHeld : 0}
+                  onUseRoomCount={() => useRoomCount(habit)}
                   onRejected={(text) =>
                     notify(cellNoticeKey(date, habit.id), `${habit.name} takes ${TYPED_INPUT[habit.type]}. "${text.trim()}" was not saved for ${monthAndDay(date)}.`)
                   }
@@ -219,7 +241,7 @@ export function DayPanel({ fs, habits, date, today, temperature, revision, arriv
             date={date}
             notes={day.notes}
             leaveGuard={leaveGuard}
-            onWrite={(text, from) => tracked(writeNotes(fs, date, text, from))}
+            onWrite={(text, base) => tracked(writeNotes(fs, date, text, base))}
             onSaved={(saved) => idle() && setDay(saved)}
             notify={(text) => notify(notesNoticeKey(date), text)}
             settle={() => settle(notesNoticeKey(date))}
@@ -237,6 +259,13 @@ function HabitRow(props: {
   today: string;
   onSet: (value: CellValue) => void;
   onUseSynced: () => void;
+  /**
+   * For the habit the writing room feeds, on a day whose count was set by
+   * hand: how many words the day's pages hold. 0 for every other row, and
+   * when there are no pages to count.
+   */
+  roomWords: number;
+  onUseRoomCount: () => void;
   onRejected: (text: string) => void;
 }) {
   const { habit, day, today } = props;
@@ -253,6 +282,10 @@ function HabitRow(props: {
   /** The action is gone once it is used. The keyboard goes to the value it was about, not nowhere. */
   const useSynced = () => {
     props.onUseSynced();
+    row.current?.querySelector<HTMLElement>("input, .day-box")?.focus();
+  };
+  const useRoomCount = () => {
+    props.onUseRoomCount();
     row.current?.querySelector<HTMLElement>("input, .day-box")?.focus();
   };
 
@@ -306,6 +339,19 @@ function HabitRow(props: {
             </button>
             <span className="row-note">
               <Mono muted>{handBackNote(hold)}</Mono>
+            </span>
+          </>
+        )}
+        {props.roomWords > 0 && (
+          <>
+            <button type="button" className="action mono" onClick={useRoomCount}>
+              Use the room's count
+            </button>
+            <span className="row-note">
+              <Mono muted>
+                Set by hand, so the writing room leaves it alone. This day's pages hold {props.roomWords}{" "}
+                {props.roomWords === 1 ? "word" : "words"}. Use the room's count puts that here, and the room keeps it from then on.
+              </Mono>
             </span>
           </>
         )}
@@ -401,8 +447,11 @@ function Notes(props: {
   /** The notes as the file has them, as last read or written. */
   notes: string;
   leaveGuard: MutableRefObject<(() => boolean) | null>;
-  /** Writes `text` over the notes `from`. Rejects with `NotesChangedError` if the file no longer holds `from`. */
-  onWrite: (text: string, from: string) => Promise<Day>;
+  /**
+   * Writes `text` over the notes `base` says the file holds, and moves `base` on when it lands. Rejects with
+   * `NotesChangedError` if the file holds something else.
+   */
+  onWrite: (text: string, base: NotesBase) => Promise<Day>;
   onSaved: (day: Day) => void;
   notify: (text: string) => void;
   settle: () => void;
@@ -410,10 +459,14 @@ function Notes(props: {
   const [text, setText] = useState(props.notes);
   /** The file's notes, when they are not the ones the typing started from and the user hasn't chosen yet. */
   const [theirs, setTheirs] = useState<string | null>(null);
-  /** The file's notes that the text in the field was typed from. */
-  const from = useRef(props.notes);
-  /** The text of a save under way. */
-  const saving = useRef<string | null>(null);
+  /**
+   * What the file's notes are known to be: what was last read or written. Every save is checked against it
+   * inside its own turn at the file, and moves it on when it lands, so a save asked for while another is
+   * still on its way is checked against that one's text and not taken for a change made elsewhere.
+   */
+  const base = useRef<NotesBase>({ text: props.notes }).current;
+  /** The text of the last save asked for, while it is on its way or has landed. Null once it has failed. */
+  const asking = useRef<string | null>(null);
   /** What this render has, for the saves and checks that run after it. */
   const latest = useRef({ text, theirs, props });
   latest.current = { text, theirs, props };
@@ -430,20 +483,17 @@ function Notes(props: {
   const save = useCallback(() => {
     const { text, theirs, props } = latest.current;
     // Nothing is saved while the question is open, and nothing that is already saved or on its way.
-    if (theirs !== null || text === from.current || text === saving.current) return;
-    saving.current = text;
-    const done = () => {
-      if (saving.current === text) saving.current = null;
-    };
-    props.onWrite(text, from.current).then(
+    if (theirs !== null || text === (asking.current ?? base.text)) return;
+    asking.current = text;
+    // It takes its turn at once, behind any save still on its way, and is checked against what that one wrote.
+    props.onWrite(text, base).then(
       (saved) => {
-        from.current = text;
-        done();
         props.onSaved(saved);
         props.settle();
       },
       (e) => {
-        done();
+        // Whatever went wrong, this text can be asked for again.
+        if (asking.current === text) asking.current = null;
         if (e instanceof NotesChangedError) ask(e.day.notes);
         // Not on disk: the next save, on the next keystroke or on leaving, tries again.
         else props.notify(`The notes for ${day} were not saved. ${reason(e)}`);
@@ -455,11 +505,11 @@ function Notes(props: {
   // The file's notes as read again (the window came back to the front, a sync landed, a value was saved).
   useEffect(() => {
     const { text, theirs } = latest.current;
-    // The ones the typing started from, or this field's own save arriving by another road: nothing new.
-    if (props.notes === from.current || props.notes === saving.current) {
-      // And if they are back to what the typing started from, there is no longer anything to ask,
+    // What the file is known to hold (this field's own save arriving by another road, as often as not): nothing new.
+    if (props.notes === base.text) {
+      // And if they are back to what the typing stands on, there is no longer anything to ask,
       // and what is typed can be saved after all.
-      if (theirs !== null && props.notes === from.current) {
+      if (theirs !== null) {
         latest.current.theirs = null;
         setTheirs(null);
         props.settle();
@@ -467,9 +517,10 @@ function Notes(props: {
       }
       return;
     }
-    if (text === from.current && saving.current === null) {
+    if (text === base.text) {
       // Changed outside, with nothing typed here: the field takes the file's text, and that is all.
-      from.current = props.notes;
+      base.text = props.notes;
+      asking.current = null;
       setText(props.notes);
       setTheirs(null);
     } else if (theirs !== props.notes) {
@@ -481,7 +532,8 @@ function Notes(props: {
   /** Keeps what is typed: from here on it is typed over the file's text, and is saved over it. */
   const keepMine = () => {
     if (theirs === null) return;
-    from.current = theirs;
+    base.text = theirs;
+    asking.current = null;
     latest.current.theirs = null;
     setTheirs(null);
     props.settle();
@@ -490,7 +542,8 @@ function Notes(props: {
   /** Takes the file's text in place of what is typed. */
   const takeTheirs = () => {
     if (theirs === null) return;
-    from.current = theirs;
+    base.text = theirs;
+    asking.current = null;
     setText(theirs);
     setTheirs(null);
     props.settle();

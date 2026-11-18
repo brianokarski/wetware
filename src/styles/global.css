@@ -722,18 +722,27 @@ html[data-room] {
   color: var(--room-ink);
 }
 
-/* Said quietly: one or two lines under the strip, with what can be done about it beside them. */
+/*
+ * Said quietly: under the strip, with what can be done about it beside it. It has lines of its own
+ * kept for it and never takes more, so the text below does not move for a message, however long.
+ */
 .room-said {
   display: flex;
   align-items: baseline;
   column-gap: var(--col-gutter);
-  min-height: calc(var(--room-said) * var(--leading-mono) * var(--size-mono));
-  padding-top: var(--space-2);
+  height: calc(var(--room-said) * var(--leading-mono) * var(--size-mono));
+  margin-top: var(--space-2);
+  overflow: hidden;
 }
 
 .room-notice {
   flex: 1;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--room-said);
+  line-clamp: var(--room-said);
+  overflow: hidden;
   color: var(--room-ink);
   user-select: text;
 }

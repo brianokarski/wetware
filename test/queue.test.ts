@@ -1,12 +1,14 @@
 /** S8: read-modify-write helpers must not interleave on one file. */
 import { describe, expect, it, vi } from "vitest";
 import {
-  archiveHabit, FILE_TIME_LIMIT_MS, FileTimeoutError, HABITS_FILE, loadHabits, loadMonth, memoryFs, NotesChangedError, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
+  archiveHabit, drained, FILE_TIME_LIMIT_MS, FileTimeoutError, HABITS_FILE, loadHabits, loadMonth, memoryFs, NotesChangedError, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
   writeDay, writeNotes, type DataFs,
 } from "../src/data";
 import { inTurn } from "../src/data/queue";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** What a day's notes were last known to be, for a save that stands alone. */
+const at = (text: string) => ({ text });
 
 /**
  * An fs whose reads and writes take a while, so unserialised edits would
@@ -212,26 +214,26 @@ describe("notes written only over the notes they were written from", () => {
 
   it("writes when the file's notes are the ones the edit started from", async () => {
     const fs = slowFs({ [path]: file });
-    const saved = await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", "Slept badly.\n");
+    const saved = await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", at("Slept badly.\n"));
     expect(saved.notes).toBe("Slept badly.\nTyped in Wetware.\n");
     expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 2\n---\n\nSlept badly.\nTyped in Wetware.\n");
     // And again from there, and on a day with no file, whose notes are empty.
-    await writeNotes(fs, "2026-11-10", "All new.\n", "Slept badly.\nTyped in Wetware.\n");
-    await writeNotes(fs, "2026-11-09", "First.", "");
+    await writeNotes(fs, "2026-11-10", "All new.\n", at("Slept badly.\nTyped in Wetware.\n"));
+    await writeNotes(fs, "2026-11-09", "First.", at(""));
     expect(fs.files.get("days/2026-11-09.md")).toBe("---\ndate: 2026-11-09\n---\n\nFirst.");
   });
 
   it("writes nothing over notes that were changed in the file meanwhile, and hands back the day as it is", async () => {
     const outside = `${file}Second line from Obsidian.\n`;
     const fs = slowFs({ [path]: outside });
-    const refused = writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", "Slept badly.\n");
+    const refused = writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", at("Slept badly.\n"));
     await expect(refused).rejects.toBeInstanceOf(NotesChangedError);
     const error = (await refused.catch((e) => e)) as NotesChangedError;
     expect(error.day.notes).toBe("Slept badly.\nSecond line from Obsidian.\n");
     expect(fs.files.get(path)).toBe(outside);
     expect(fs.writes).toBe(0);
     // Having seen them, the edit can be written over them.
-    await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", error.day.notes);
+    await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", at(error.day.notes));
     expect(fs.files.get(path)).toBe(`${file}Typed in Wetware.\n`);
   });
 
@@ -239,7 +241,7 @@ describe("notes written only over the notes they were written from", () => {
     const fs = slowFs({ [path]: file });
     // Another write to the body is already queued when the notes save is asked for.
     const first = writeDay(fs, "2026-11-10", { notes: "Changed by something else.\n" });
-    const second = writeNotes(fs, "2026-11-10", "Typed in Wetware.\n", "Slept badly.\n");
+    const second = writeNotes(fs, "2026-11-10", "Typed in Wetware.\n", at("Slept badly.\n"));
     await first;
     await expect(second).rejects.toBeInstanceOf(NotesChangedError);
     expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 2\n---\n\nChanged by something else.\n");
@@ -247,17 +249,63 @@ describe("notes written only over the notes they were written from", () => {
 
   it("is not put off by a change to the frontmatter, or by how the body's line ends and leading blank line are written", async () => {
     const fs = slowFs({ [path]: file.replace("mood: 2", "mood: 5\nadded_outside: yes") });
-    await writeNotes(fs, "2026-11-10", "New.\n", "Slept badly.\n");
+    await writeNotes(fs, "2026-11-10", "New.\n", at("Slept badly.\n"));
     expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 5\nadded_outside: yes\n---\n\nNew.\n");
     const crlf = slowFs({ [path]: "---\r\ndate: 2026-11-10\r\n---\r\n\r\nOne.\r\nTwo.\r\n" });
-    await writeNotes(crlf, "2026-11-10", "One.\nTwo.\nThree.\n", "One.\nTwo.\n");
+    await writeNotes(crlf, "2026-11-10", "One.\nTwo.\nThree.\n", at("One.\nTwo.\n"));
     expect(crlf.files.get(path)).toBe("---\r\ndate: 2026-11-10\r\n---\r\n\r\nOne.\r\nTwo.\r\nThree.\r\n");
   });
 
   it("takes a file that was deleted, or emptied, for a change too", async () => {
     const gone = slowFs();
-    await expect(writeNotes(gone, "2026-11-10", "Typed.\n", "Slept badly.\n")).rejects.toBeInstanceOf(NotesChangedError);
+    await expect(writeNotes(gone, "2026-11-10", "Typed.\n", at("Slept badly.\n"))).rejects.toBeInstanceOf(NotesChangedError);
     expect(gone.files.size).toBe(0);
+  });
+
+  it("a save asked for while one is on its way is checked against what that one wrote, not taken for a change made elsewhere", async () => {
+    const fs = slowFs({ [path]: file });
+    // One notes field, one notion of what the file holds. Three saves asked for at once, as on a slow disk.
+    const base = at("Slept badly.\n");
+    const saves = Promise.all([
+      writeNotes(fs, "2026-11-10", "Slept badly.\nOne.", base),
+      writeNotes(fs, "2026-11-10", "Slept badly.\nOne. Two.", base),
+      writeNotes(fs, "2026-11-10", "Slept badly.\nOne. Two. Three.", base),
+    ]);
+    // Nothing has landed yet, and what the file is known to hold has not moved.
+    expect(base.text).toBe("Slept badly.\n");
+    expect((await saves).map((day) => day.notes)).toEqual(["Slept badly.\nOne.", "Slept badly.\nOne. Two.", "Slept badly.\nOne. Two. Three."]);
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 2\n---\n\nSlept badly.\nOne. Two. Three.");
+    expect(base.text).toBe("Slept badly.\nOne. Two. Three.");
+    expect(fs.writes).toBe(3);
+  });
+
+  it("a save that fails does not move what the file is known to hold, and the one behind it is not refused for it", async () => {
+    const inner = slowFs({ [path]: file });
+    let full = true;
+    const fs: DataFs = { ...inner, write: (p, text) => (full ? Promise.reject(new Error("No space left on device")) : inner.write(p, text)) };
+    const base = at("Slept badly.\n");
+    const first = writeNotes(fs, "2026-11-10", "Slept badly.\nOne.", base).catch((e) => e);
+    const second = writeNotes(fs, "2026-11-10", "Slept badly.\nOne. Two.", base).catch((e) => e);
+    expect((await first).message).toBe("No space left on device");
+    expect(await second).not.toBeInstanceOf(NotesChangedError);
+    expect(base.text).toBe("Slept badly.\n");
+    full = false;
+    await writeNotes(fs, "2026-11-10", "Slept badly.\nOne. Two.", base);
+    expect(base.text).toBe("Slept badly.\nOne. Two.");
+    // A refusal for a change made elsewhere doesn't move it either.
+    inner.files.set(path, `${file}From elsewhere.\n`);
+    await expect(writeNotes(fs, "2026-11-10", "Mine.", base)).rejects.toBeInstanceOf(NotesChangedError);
+    expect(base.text).toBe("Slept badly.\nOne. Two.");
+  });
+
+  it("notes that are already what the file holds are known to be there without being written", async () => {
+    const fs = slowFs({ [path]: `${file}Landed late.\n` });
+    // A save that was given up on landed after all. The field still thinks the file holds the older notes.
+    const base = at("Slept badly.\n");
+    const saved = await writeNotes(fs, "2026-11-10", "Slept badly.\nLanded late.\n", base);
+    expect(saved.notes).toBe("Slept badly.\nLanded late.\n");
+    expect(base.text).toBe("Slept badly.\nLanded late.\n");
+    expect(fs.writes).toBe(0);
   });
 });
 
@@ -304,6 +352,122 @@ describe("a file operation that never comes back", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("tells a task when it has been given up on", async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = {};
+      const seen: boolean[] = [];
+      let finish!: () => void;
+      const slow = inTurn(fs, "pages/2026-11-17.md", async (turn) => {
+        seen.push(turn.live());
+        await new Promise<void>((resolve) => (finish = resolve));
+        seen.push(turn.live());
+      });
+      const failed = expect(slow).rejects.toBeInstanceOf(FileTimeoutError);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      await failed;
+      finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(seen).toEqual([true, false]);
+      // One that finishes in time is live to the end.
+      const quick = await inTurn(fs, "pages/2026-11-17.md", async (turn) => turn.live());
+      expect(quick).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a change given up on while its file was being read writes nothing when the read comes back", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = memoryFs({ "days/2026-11-16.md": "---\ndate: 2026-11-16\nmood: 3\n---\n\nNotes.\n" });
+      const answers: (() => void)[] = [];
+      let stuck = true;
+      const writes: string[] = [];
+      const fs: DataFs = {
+        ...inner,
+        read: (p) => (stuck ? new Promise<void>((resolve) => answers.push(resolve)).then(() => inner.read(p)) : inner.read(p)),
+        write: (p, text) => (writes.push(text), inner.write(p, text)),
+      };
+      const base = at("Notes.\n");
+      const value = writeDay(fs, "2026-11-16", { values: { mood: 1 } }).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      const notes = writeNotes(fs, "2026-11-16", "Notes.\nGiven up on.", base).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      expect(await value).toBeInstanceOf(FileTimeoutError);
+      expect(await notes).toBeInstanceOf(FileTimeoutError);
+      // A newer change lands while those two reads are still out.
+      stuck = false;
+      await writeDay(fs, "2026-11-16", { values: { mood: 5 } });
+      await writeNotes(fs, "2026-11-16", "Notes.\nNewer.", base);
+      expect(writes.length).toBe(2);
+      // Now the stuck reads come back. Neither goes on to write what it was asked to, over the newer change.
+      expect(answers.length).toBe(2);
+      for (const answer of answers) answer();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writes.length).toBe(2);
+      expect(inner.files.get("days/2026-11-16.md")).toBe("---\ndate: 2026-11-16\nmood: 5\n---\n\nNotes.\nNewer.");
+      expect(base.text).toBe("Notes.\nNewer.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a notes save given up on that lands after all does not move what the file is known to hold", async () => {
+    vi.useFakeTimers();
+    try {
+      const path = "days/2026-11-16.md";
+      const inner = memoryFs({ [path]: "---\ndate: 2026-11-16\n---\n\nOne.\n" });
+      let land!: () => void;
+      let first = true;
+      // The shell keeps writes to one file in order: the second waits for the first to land.
+      let before: Promise<void> = Promise.resolve();
+      const fs: DataFs = {
+        ...inner,
+        write: (p, text) => {
+          const held = first ? new Promise<void>((resolve) => (land = resolve)) : Promise.resolve();
+          first = false;
+          before = Promise.all([before, held]).then(() => inner.write(p, text));
+          return before;
+        },
+      };
+      const base = at("One.\n");
+      const stuck = writeNotes(fs, "2026-11-16", "One.\nTwo.", base).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      expect(await stuck).toBeInstanceOf(FileTimeoutError);
+      // A newer save is asked for. Its own check is made against what the file holds now, which is still "One.".
+      const newer = writeNotes(fs, "2026-11-16", "One.\nTwo. Three.", base);
+      await vi.advanceTimersByTimeAsync(10);
+      // The stuck write lands at last, and the newer one after it, in the order they were asked for.
+      land();
+      await vi.advanceTimersByTimeAsync(10);
+      expect((await newer).notes).toBe("One.\nTwo. Three.");
+      expect(inner.files.get(path)).toBe("---\ndate: 2026-11-16\n---\n\nOne.\nTwo. Three.");
+      // What the file is known to hold is what the newer save wrote, not what the abandoned one did.
+      expect(base.text).toBe("One.\nTwo. Three.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the folder is drained once nothing is queued and nothing more is being queued by what just finished", async () => {
+    const fs = slowFs();
+    let both = false;
+    // A save in two steps: one file, and then, once that has landed, another.
+    void writeDay(fs, "2026-11-16", { values: { mood: 1 } })
+      .then(() => writeDay(fs, "2026-11-17", { values: { mood: 2 } }))
+      .then(() => (both = true));
+    await drained(fs);
+    expect(both).toBe(true);
+    expect(fs.files.has("days/2026-11-17.md")).toBe(true);
+    // With nothing queued it resolves at once, and a failed write doesn't hold it up.
+    await drained(fs);
+    await drained({});
+    const failing: DataFs = { ...memoryFs(), write: () => Promise.reject(new Error("No space left")) };
+    void writeDay(failing, "2026-11-16", { values: { mood: 1 } }).catch(() => {});
+    await drained(failing);
   });
 
   it("leaves an operation that does come back alone, and sets no timer loose", async () => {

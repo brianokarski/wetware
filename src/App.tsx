@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  currentNotice, dateKey, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, pagesHabit, pagesNoticeKey, reason, saveSettings,
-  setMorningPagesGoal, SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
+  currentNotice, dateKey, drained, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, pagesHabit, pagesNoticeKey, reason,
+  saveSettings, setMorningPagesGoal, SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
   type DataFs, type Habit, type Notice, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
 import { now, useToday } from "./platform/clock";
 import {
-  adoptSuggestedDataRoot, chooseDataRoot, folderFs, getDataRoot, suggestedDataRoot, syncSources, type OpenFolder,
+  adoptSuggestedDataRoot, chooseDataRoot, folderFs, getDataRoot, onFlushAsked, suggestedDataRoot, syncSources, type OpenFolder,
 } from "./platform/tauri";
+import { FLUSH_EVENT } from "./platform/useAutosave";
 import { useSync } from "./platform/useSync";
 import { testConnection } from "./sync";
 import { DayPanel, type DayNav } from "./screens/DayPanel";
@@ -137,6 +138,19 @@ export default function App() {
     settle(key);
   };
 
+  // The shell holds a close or a quit until what is typed is on disk. When it asks, every field that saves as
+  // it is typed in is told to save now, and the shell is answered once the folder has nothing left on its way.
+  const flushing = useRef<DataFs | null>(null);
+  flushing.current = fs;
+  useEffect(
+    () =>
+      onFlushAsked(async () => {
+        window.dispatchEvent(new Event(FLUSH_EVENT));
+        if (flushing.current) await drained(flushing.current);
+      }),
+    [],
+  );
+
   /** Whether the day view, if one is open, can be left. It says why on the message line when it can't. */
   const mayLeave = useCallback(() => leaveGuard.current === null || leaveGuard.current(), []);
   /**
@@ -178,6 +192,13 @@ export default function App() {
     setPagesDate(null);
     setScreen("month");
   }, [pagesDate, habits, mayLeave]);
+  /**
+   * Today's pages: for the ways in that mean "today" and name no day. The
+   * clock is asked at the moment of asking. The `today` on screen can be a
+   * few seconds behind just after midnight, and the writing must not land
+   * in yesterday's file.
+   */
+  const writeToday = useCallback(() => openPages(dateKey(now())), [openPages]);
   /** The grid has opened where it was asked to. From here on it opens where it always does. */
   const arrived = useCallback(() => setReturnTo(null), []);
 
@@ -250,6 +271,7 @@ export default function App() {
             onArrive={arrived}
             onOpenDay={openDay}
             onOpenPages={openPages}
+            onWriteToday={writeToday}
             notify={notify}
             settle={settle}
             sync={sync}
@@ -284,8 +306,8 @@ export default function App() {
               disabled={item.id === null || (item.id !== "settings" && !dataRoot)}
               onClick={() => {
                 if (!item.id || !mayLeave()) return;
-                // "Pages" is today's pages, in the writing room.
-                if (item.id === "room") return openPages(today);
+                // The way to the writing room is today's pages.
+                if (item.id === "room") return writeToday();
                 // "Month" is the month: from a day, it goes back to the grid.
                 if (item.id === "month") closeDay();
                 setScreen(item.id);

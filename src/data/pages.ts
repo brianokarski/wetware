@@ -8,13 +8,17 @@
  * To keep that structural and not just careful:
  *
  * - `readPages` is the only function here that hands the text to a caller,
- *   and only the writing room calls it. It is not re-exported from
- *   `data/index.ts`; `test/pages.privacy.test.ts` fails if anything else in
- *   `src/` names it, or names the pages folder.
- * - Nothing else here returns, throws or keeps the text. An error about a
- *   pages file names the file and never quotes it, and carries no copy of it.
+ *   and only the writing room calls it. Neither it nor `pagesPath`, which
+ *   says where a day's pages are, is re-exported from `data/index.ts`: the
+ *   room imports them from here. `test/pages.privacy.test.ts` holds what
+ *   this module exports, and what the front door passes on, to exact lists,
+ *   and fails if anything else in `src/` names the pages folder, in any
+ *   case, or reaches into this module.
+ * - Nothing else here returns, throws or keeps the text. What other screens
+ *   need of a day's pages is a number (`pagesWords`). An error about a pages
+ *   file names the file and never quotes it, and carries no copy of it.
  */
-import { writeDay, type Day, type DayPatch } from "./dayFile";
+import { dropStubDay, writeDay, type Day, type DayPatch } from "./dayFile";
 import type { DataFs } from "./fs";
 import { dayKey, type Habit } from "./habits";
 import { reason } from "./notices";
@@ -23,7 +27,7 @@ import { detectEol } from "./yamlPatch";
 
 const PAGES_DIR = "pages";
 
-/** The file a day's pages are kept in. For naming it; reading it is `readPages`, in the room only. */
+/** The file a day's pages are kept in. For the room, to say where the text is; nothing else needs to know. */
 export const pagesPath = (date: string): string => `${PAGES_DIR}/${date}.md`;
 
 /** What the day file's `_sources` says of a count the room wrote. */
@@ -100,43 +104,65 @@ export function wordLine(words: number, goal: number | null): string {
 
 const own = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 
-/**
- * Whether the day's count is the room's to set: there is none yet, or
- * `_sources` says the room wrote the one that is there. A count `_sources`
- * calls `manual` (typed into the grid or the day view), or anything else,
- * is someone's own, and so is one with no entry there at all: typed into
- * the file by hand, as far as the app can tell. Those are left as they are.
- */
-export function roomKeepsCount(habit: Habit, day: Day): boolean {
+/** Whether `_sources` says the room wrote the day's count. */
+function roomWroteCount(habit: Habit, day: Day): boolean {
   const key = dayKey(habit);
-  if (own(day.sources, key)) return day.sources[key] === PAGES_SOURCE;
-  return !own(day.values, key) || day.values[key] === null;
+  return own(day.sources, key) && day.sources[key] === PAGES_SOURCE;
 }
 
 /**
- * The day-file patch that records how many words the day's pages hold, or
- * null if there is nothing to change: the count is already that, or it was
- * set by hand. Pages with no words in them leave no count behind: the key
- * the room wrote, and its source entry, are taken out again.
+ * Whether the day's count is the room's to set. It is when there is no
+ * count: an empty one is nobody's, whatever `_sources` says of it (a count
+ * cleared in the grid is marked `manual`, and is still empty). And it is
+ * when `_sources` says the room wrote the one that is there. A count that
+ * holds a value `_sources` calls `manual` (typed into the grid or the day
+ * view), or anything else, is someone's own, and so is one with no entry
+ * there at all: typed into the file by hand, as far as the app can tell.
+ * Those are left as they are.
  */
-export function pagesCountPatch(habit: Habit, day: Day, words: number): DayPatch | null {
-  if (!roomKeepsCount(habit, day)) return null;
+export function roomKeepsCount(habit: Habit, day: Day): boolean {
+  const key = dayKey(habit);
+  if (!own(day.values, key) || day.values[key] === null) return true;
+  return roomWroteCount(habit, day);
+}
+
+/**
+ * The patch that makes the day's count `words`, as the room's own, whoever
+ * set the count that is there: for a count that is the room's to keep, and
+ * for one handed back to it. Null if the file already says exactly that.
+ * Pages with no words in them leave no count behind: what the room wrote,
+ * the key and its source entry, is taken out again, and `_sources` with it
+ * if that was all it held.
+ */
+export function roomCountPatch(habit: Habit, day: Day, words: number): DayPatch | null {
   const key = dayKey(habit);
   const held = own(day.values, key) ? day.values[key] : undefined;
   // No prototype, so a key such as `__proto__` is a key like any other.
   const values: Record<string, number | undefined> = Object.create(null);
   const sources: Record<string, string | undefined> = Object.create(null);
   if (words === 0) {
-    // Nothing of the room's is there to take out: no key at all, or an empty one it never wrote.
-    if (!own(day.sources, key)) return null;
+    // Nothing is there to take out: no key and no entry.
+    if (held === undefined && !own(day.sources, key)) return null;
     values[key] = undefined;
     sources[key] = undefined;
-    return { values, sources };
+    return { values, sources, tidy: true };
   }
-  if (held === words && own(day.sources, key)) return null;
+  if (held === words && roomWroteCount(habit, day)) return null;
   values[key] = words;
   sources[key] = PAGES_SOURCE;
   return { values, sources };
+}
+
+/**
+ * The day-file patch that records how many words the day's pages hold, or
+ * null if there is nothing to change: the count is already that, or it was
+ * set by hand. With no words there is nothing to record: a count the room
+ * wrote is taken out, and an empty one that someone else left is left.
+ */
+export function pagesCountPatch(habit: Habit, day: Day, words: number): DayPatch | null {
+  if (!roomKeepsCount(habit, day)) return null;
+  if (words === 0 && !roomWroteCount(habit, day)) return null;
+  return roomCountPatch(habit, day, words);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,8 +245,12 @@ export interface PagesBase {
  * save that lands moves `base` on to what it wrote, there and then, so a
  * second save asked for while the first is on its way is checked against
  * the first one's text when its own turn comes. Text that is already what
- * the file holds is not written again, and no file is made for pages that
- * were never written.
+ * the file holds is known to be there without being written, and no file
+ * is made for pages that were never written.
+ *
+ * A save that is given up on (the folder gave no answer in time) writes
+ * nothing it had not already asked the shell for, and does not move `base`
+ * if that write lands after all: by then a later save may have landed.
  *
  * The count goes to the day file through the same queue as every other
  * change to it, as the value of `habit` with the source `morning_pages`,
@@ -229,25 +259,58 @@ export interface PagesBase {
  */
 export async function savePages(fs: DataFs, date: string, text: string, base: PagesBase, habit: Habit | null): Promise<PagesSaved> {
   const path = pagesPath(date);
-  await inTurn(fs, path, async () => {
+  await inTurn(fs, path, async (turn) => {
     const raw = await fs.read(path);
-    if (shown(raw) !== base.text) throw new PagesChangedError(date);
-    if (text !== base.text) await fs.write(path, written(text, raw));
-    base.text = text;
+    // Given up on while the file was being read: later saves are running, and this one writes nothing.
+    if (!turn.live()) return;
+    const held = shown(raw);
+    if (held !== text) {
+      if (held !== base.text) throw new PagesChangedError(date);
+      await fs.write(path, written(text, raw));
+    }
+    if (turn.live()) base.text = text;
   });
 
   const words = countWords(text);
   if (habit === null) return { words, count: "no_habit" };
   let count: CountOutcome = "kept";
+  let taken = false;
   try {
     await writeDay(fs, date, (day) => {
       if (!roomKeepsCount(habit, day)) count = "by_hand";
-      return pagesCountPatch(habit, day, words);
+      const patch = pagesCountPatch(habit, day, words);
+      taken = patch !== null && words === 0;
+      return patch;
     });
+    // The count was the one thing in a day file the app made: the file goes with it.
+    if (taken) await dropStubDay(fs, date);
   } catch (e) {
     throw new PagesCountError(date, e);
   }
   return { words, count };
+}
+
+/**
+ * How many words a day's pages hold: 0 if there are none. A number, and
+ * nothing of the text. For a screen other than the room that needs to know
+ * whether a day has pages.
+ */
+export function pagesWords(fs: DataFs, date: string): Promise<number> {
+  const path = pagesPath(date);
+  return inTurn(fs, path, async () => countWords(shown(await fs.read(path))));
+}
+
+/**
+ * Hands a day's count back to the room: whatever the day file says, and
+ * whoever set it, the count becomes the number of words the day's pages
+ * hold, as the room's own, which the room keeps from then on. Resolves to
+ * the day as saved.
+ */
+export async function takeRoomCount(fs: DataFs, date: string, habit: Habit): Promise<Day> {
+  const words = await pagesWords(fs, date);
+  const day = await writeDay(fs, date, (now) => roomCountPatch(habit, now, words));
+  if (words === 0) await dropStubDay(fs, date);
+  return day;
 }
 
 /** The habit the writing room feeds: the first on show whose source is `morning_pages`. Null if there is none. */

@@ -9,12 +9,13 @@ export * from "./cells";
 export * from "./dayView";
 export * from "./notices";
 export * from "./autosave";
-// Morning pages: everything but the one function that hands over their text. That one is for the writing room
-// alone, which imports it from the module itself (test/pages.privacy.test.ts holds everyone to this).
+// Morning pages: everything but the function that hands over their text and the one that says where it is
+// kept. Those two are for the writing room alone, which imports them from the module itself.
+// test/pages.privacy.test.ts holds this list to an exact one: add to it there first.
 export {
   countWords, currentPage, goalPages, pageLine, PAGES_SOURCE, PagesChangedError, pagesCountPatch, PagesCountError, pagesHabit,
-  pagesNoticeKey, pagesPath, pageStarts, roomKeepsCount, savePages, WORDS_PER_PAGE, wordLine,
+  pagesNoticeKey, pageStarts, pagesWords, roomCountPatch, roomKeepsCount, savePages, takeRoomCount, WORDS_PER_PAGE, wordLine,
   type CountOutcome, type PagesBase, type PagesSaved, type PageStart,
 } from "./pages";
-export { FileTimeoutError, FILE_TIME_LIMIT_MS } from "./queue";
+export { drained, FileTimeoutError, FILE_TIME_LIMIT_MS } from "./queue";
 export { YamlPatchError } from "./yamlPatch";

@@ -21,10 +21,13 @@ export function useToday(): string {
   useEffect(() => {
     const check = () => setToday(dateKey(now()));
     const timer = window.setInterval(check, CHECK_EVERY_MS);
+    // A laptop opened in the morning with the app still in front gets no focus event, but the page is shown again.
     window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
     };
   }, []);
   return today;

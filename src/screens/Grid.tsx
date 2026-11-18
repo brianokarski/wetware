@@ -3,7 +3,7 @@ import { Mono } from "../components/primitives";
 import {
   cellNoticeKey, cellPatch, cellState, dayNoticeKey, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate,
   monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, PAGES_SOURCE, pagesHabit, parseCellInput,
-  previousMonth, readDay, reason, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, wordLine, writeCell,
+  previousMonth, readDay, reason, roomKeepsCount, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, wordLine, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
 import { lastSyncedLabel } from "../sync";
@@ -24,6 +24,8 @@ interface Props {
   onOpenDay: (date: string) => void;
   /** Asks for a day's morning pages to be opened in the writing room. Whether they can be is decided there. */
   onOpenPages: (date: string) => void;
+  /** Asks for today's morning pages: whatever day it is at the moment of asking, not the day this grid was drawn for. */
+  onWriteToday: () => void;
   /** Called once the grid has opened at `openAt`. */
   onArrive: () => void;
   /**
@@ -71,7 +73,7 @@ const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, onOpenPages, openAt, onArrive, notify, settle, sync, onSync }: Props) {
+export function Grid({ fs, habits, today, onOpenDay, onOpenPages, onWriteToday, openAt, onArrive, notify, settle, sync, onSync }: Props) {
   const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt?.date ?? today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
   const [wanted, setFocus] = useState<Position>(() => {
@@ -241,6 +243,10 @@ export function Grid({ fs, habits, today, onOpenDay, onOpenPages, openAt, onArri
   const clear = (at: Position) => {
     const found = cellAt(at);
     if (!found || found.cell.value === null || !editable(found.day)) return;
+    // A count the writing room wrote is the count of what is written there. It is not cleared by a key pressed
+    // on its box: the keyboard lands here on the way out of the room, and one stray Backspace would wipe it.
+    // A count entered by hand can be cleared like any other.
+    if (found.habit.source === PAGES_SOURCE && roomKeepsCount(found.habit, found.day)) return;
     setCell(found.habit, found.day.date, TYPED.has(found.habit.type) ? null : false);
   };
 
@@ -337,7 +343,7 @@ export function Grid({ fs, habits, today, onOpenDay, onOpenPages, openAt, onArri
 
       <div className="month-title">
         <h1 className="display">{monthName(month)}</h1>
-        <PagesPrompt habit={pagesHabit(habits)} day={isCurrent ? days?.[today] : undefined} today={today} onWrite={() => onOpenPages(today)} />
+        <PagesPrompt habit={pagesHabit(habits)} day={isCurrent ? days?.[today] : undefined} today={today} onWrite={onWriteToday} />
       </div>
 
       <table

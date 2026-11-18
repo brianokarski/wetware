@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import {
-  countWords, dayKey, longDate, monthAndDay, pageLine, PagesChangedError, PagesCountError, pagesNoticeKey, pagesPath, pageStarts,
+  countWords, dayKey, longDate, monthAndDay, pageLine, PagesChangedError, PagesCountError, pagesNoticeKey, pageStarts,
   readDay, reason, roomKeepsCount, savePages, valueText, weekdayName, wordLine,
   type DataFs, type Habit,
 } from "../data";
-// The one place the text of the pages is read. Nothing else in the app imports this.
-import { readPages } from "../data/pages";
+// The one place the text of the pages is read, and the one place that is told where it is kept.
+// Nothing else in the app imports either of these.
+import { pagesPath, readPages } from "../data/pages";
 import { useAutosave } from "../platform/useAutosave";
 
 interface Props {
@@ -52,6 +53,14 @@ const sameMarks = (a: Mark[], b: Mark[]) => a.length === b.length && a.every((ma
  * A save is only written over the text it was typed from. If the file has
  * been changed by something else since, nothing is written: the typing stays
  * here, unsaved, and the user is asked which to keep.
+ *
+ * The room is not left with text that is not on disk. Leaving waits for the
+ * last save to land. If it can't be made, the room stays open and says why,
+ * and the only way out is to say, in so many words, that the text may go.
+ *
+ * The count in the day file is the room's to keep, so it is owed whenever
+ * the room shows text it did not write itself: text found in the file when
+ * the room opens, or taken from it later. The next save, or leaving, pays it.
  */
 export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, notify, settle }: Props) {
   /** `loading` until the file is read; `unreadable` if it can't be, and then nothing can be typed over it. */
@@ -67,8 +76,18 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
   const base = useRef({ text: "" }).current;
   /** The text of the last save asked for, while it is on its way or has landed. Null once it has failed. */
   const asking = useRef<string | null>(null);
-  /** The text is on disk and its count is not: the next save has the count to write. */
+  /** The text is on disk and its count may not be: the next save has the count to write. */
   const uncounted = useRef(false);
+  /** Resolves once every save asked for so far has landed or failed. */
+  const settling = useRef<Promise<void>>(Promise.resolve());
+  /** Why the last save could not be made. Null once one has landed since. */
+  const trouble = useRef<string | null>(null);
+  /** A way out is under way: it waits for the saves, and is not started twice. */
+  const leaving = useRef(false);
+  /** The user has said the text may go. Nothing more is saved, and nothing more is said. */
+  const gone = useRef(false);
+  /** Leaving was refused because what is typed is not on disk. The room says so, and offers the one way out. */
+  const [held, setHeld] = useState(false);
   /** What this render has, for the saves and checks that run after it. */
   const latest = useRef({ stage, text, asked });
   latest.current = { stage, text, asked };
@@ -104,6 +123,8 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
       (onDisk) => {
         if (stale) return;
         base.text = onDisk;
+        // Text the room did not write: whether the day file's count matches it is not known until it is written.
+        uncounted.current = true;
         setText(onDisk);
         setStage("ready");
       },
@@ -125,15 +146,17 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
 
   const save = useCallback(() => {
     const { stage, text, asked } = latest.current;
-    // Nothing is saved while the question is open.
-    if (stage !== "ready" || asked) return;
+    // Nothing is saved while the question is open, or once the user has said the text may go.
+    if (stage !== "ready" || asked || gone.current) return;
     // Nor what is already saved, or already on its way.
     if (text === (asking.current ?? base.text) && !uncounted.current) return;
     asking.current = text;
     // It takes its turn at once, behind any save still on its way, and is checked against what that one wrote.
-    savePages(fs, date, text, base, habit).then(
+    const done = savePages(fs, date, text, base, habit).then(
       (saved) => {
         uncounted.current = false;
+        trouble.current = null;
+        setHeld(false);
         settle(key);
         if (saved.count === "by_hand") void readCount().then(setByHand, () => {});
         else setByHand(null);
@@ -147,14 +170,16 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
           // The text is on disk. The count is tried again with the next save.
           uncounted.current = true;
           notify(key, `The pages are saved. ${reason(e)}`);
-        } else {
+        } else if (!gone.current) {
           // Not on disk: the next save, on the next keystroke or on leaving, tries again.
-          notify(key, `The pages for ${monthAndDay(date)} were not saved. ${reason(e)}`);
+          trouble.current = reason(e);
+          notify(key, `The pages for ${monthAndDay(date)} were not saved. ${trouble.current}`);
         }
       },
     );
+    settling.current = Promise.all([settling.current, done]).then(() => undefined);
   }, [fs, date, habit, base, key, notify, settle, ask, readCount]);
-  const saver = useAutosave(save);
+  const { touched, now: saveNow } = useAutosave(save);
 
   // The file may have been changed in another app while this one was in the background. Coming back to
   // the window, it is read again: taken as it is if nothing unsaved is typed here, asked about if there is.
@@ -171,12 +196,13 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
               latest.current.asked = false;
               setAsked(false);
               settle(key);
-              saver.now();
+              saveNow();
             }
           } else if (text === base.text) {
-            // Changed outside, with nothing unsaved typed here: the room takes the file's text, and that is all.
+            // Changed outside, with nothing unsaved typed here: the room takes the file's text, and owes its count.
             base.text = onDisk;
             asking.current = null;
+            uncounted.current = true;
             setText(onDisk);
           } else if (!asked) {
             ask();
@@ -188,7 +214,7 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
     };
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
-  }, [fs, date, base, key, settle, ask, saver]);
+  }, [fs, date, base, key, settle, ask, saveNow]);
 
   /** Answers the question with the file's text read afresh: it is what the typing stands on from here. */
   const answer = (take: boolean) => {
@@ -201,38 +227,82 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
         setAsked(false);
         settle(key);
         if (take) {
+          // The file's text, which the room did not write: its count is owed.
+          uncounted.current = true;
           latest.current.text = onDisk;
           setText(onDisk);
         } else {
-          saver.now();
+          saveNow();
         }
         field.current?.focus();
       },
-      (e) => notify(key, `${file} could not be read. ${reason(e)} What is typed here is still not saved.`),
+      (e) => notify(key, `What is typed here is still not saved: ${file} could not be read. ${reason(e)}`),
     );
   };
+
+  /** Says why the room can't be left while the question is open, and puts the keyboard on the first answer. */
+  const refuse = useCallback(() => {
+    notify(key, `${file} is not saved: it was changed outside Wetware. Before leaving, choose whether to keep what is typed here or take the file's text.`);
+    keep.current?.focus();
+  }, [notify, key, file]);
 
   // While the question is open the room can't be left: what is typed would be lost without a word.
   useEffect(() => {
     leaveGuard.current = () => {
       if (!latest.current.asked) return true;
-      notify(key, `${file} is not saved: it was changed outside Wetware. Before leaving, choose whether to keep what is typed here or take the file's text.`);
-      keep.current?.focus();
+      refuse();
       return false;
     };
     return () => {
       leaveGuard.current = null;
     };
-  }, [leaveGuard, notify, key, file]);
+  }, [leaveGuard, refuse]);
+
+  /**
+   * The way out. What is typed is saved first, and the room is only left
+   * once it is on disk. If the file was changed elsewhere the question is
+   * put instead. If the save can't be made the room stays open and says why.
+   */
+  const leave = useCallback(async () => {
+    if (leaving.current || gone.current) return;
+    if (latest.current.stage !== "ready") return onLeave();
+    if (latest.current.asked) return refuse();
+    leaving.current = true;
+    try {
+      // More may be typed while a save is on its way. Each time round saves what there is by then.
+      for (let tries = 0; tries < 5; tries++) {
+        saveNow();
+        await settling.current;
+        if (latest.current.asked) return;
+        if (latest.current.text === base.text) return onLeave();
+        // Nothing on its way and still not on disk: the save failed.
+        if (asking.current === null) break;
+      }
+      setHeld(true);
+      notify(
+        key,
+        `The pages for ${monthAndDay(date)} are not saved, so the room has stayed open: leaving now would lose what is typed here. ${trouble.current ?? ""}`.trim(),
+      );
+    } finally {
+      leaving.current = false;
+    }
+  }, [onLeave, refuse, saveNow, base, notify, key, date]);
+
+  /** The one way out with text that is not on disk: the user says it may go. */
+  const leaveWithout = () => {
+    gone.current = true;
+    settle(key);
+    onLeave();
+  };
 
   // Escape leaves, from anywhere in the room. Not while a character is being composed: there it belongs to the input method.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.isComposing && !event.defaultPrevented) onLeave();
+      if (event.key === "Escape" && !event.isComposing && !event.defaultPrevented) void leave();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onLeave]);
+  }, [leave]);
 
   // The room has the whole window, edge to edge, for as long as it is open.
   useEffect(() => {
@@ -313,14 +383,15 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
             {stage === "ready" && pageLine(words, goal)}
           </span>
           <span className="room-count">{stage === "ready" && wordLine(words, goal)}</span>
-          <button type="button" className="room-leave" aria-label="Leave the writing room" onClick={onLeave}>
+          <button type="button" className="room-leave" aria-label="Leave the writing room" onClick={() => void leave()}>
             Leave
           </button>
         </div>
 
         {/* What the room has to say: a save that failed, a file changed elsewhere. Said here, in the room's own voice. */}
         <div className="room-said mono">
-          <p className="room-notice" role="alert">
+          {/* It keeps to the lines kept for it, so the text below never moves. The whole of a longer one is in its tooltip. */}
+          <p className="room-notice" role="alert" title={notice ?? undefined}>
             {notice}
           </p>
           {asked && (
@@ -333,7 +404,12 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
               </button>
             </span>
           )}
-          {notice && !asked && stage === "ready" && (
+          {held && !asked && (
+            <button type="button" className="room-action" onClick={leaveWithout}>
+              Leave without saving
+            </button>
+          )}
+          {notice && !asked && !held && stage === "ready" && (
             <button type="button" className="room-action" onClick={() => settle(key)}>
               Dismiss
             </button>
@@ -356,15 +432,19 @@ export function MorningPages({ fs, habit, date, notice, leaveGuard, onLeave, not
               placeholder="Start anywhere."
               rows={1}
               spellCheck
+              autoComplete="off"
+              // Inline predictions and suggested rewrites are asked not to offer themselves here. This is the one
+              // switch a page has; the system's Writing Tools are the web view's own, and are not the page's to turn off.
+              {...{ writingsuggestions: "false" }}
               value={text}
               onChange={(e) => {
                 const area = e.currentTarget;
                 setText(area.value);
-                saver.touched();
+                touched();
                 // Writing at the end: the line being written stays clear of the window's edge.
                 if (area.selectionEnd === area.value.length) requestAnimationFrame(() => end.current?.scrollIntoView({ block: "nearest" }));
               }}
-              onBlur={saver.now}
+              onBlur={saveNow}
             />
             {marks.map((mark) => (
               <span key={mark.page} className="room-mark mono" data-page={mark.page} style={{ "--at": mark.top } as CSSProperties} aria-hidden="true">

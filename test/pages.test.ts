@@ -1,11 +1,11 @@
 /** Morning pages: counting words, where pages begin, the count in the day file, and saving. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  countWords, currentPage, goalPages, memoryFs, pageLine, PagesChangedError, pagesCountPatch, PagesCountError, pagesHabit,
-  pagesNoticeKey, pagesPath, pageStarts, parseDay, parseHabits, roomKeepsCount, savePages, SEED_HABITS, updateDayFile,
-  wordLine, writeDay, type DataFs, type Habit,
+  countWords, currentPage, FILE_TIME_LIMIT_MS, FileTimeoutError, goalPages, memoryFs, pageLine, PagesChangedError, pagesCountPatch,
+  PagesCountError, pagesHabit, pagesNoticeKey, pageStarts, pagesWords, parseDay, parseHabits, roomCountPatch, roomKeepsCount, savePages,
+  SEED_HABITS, takeRoomCount, updateDayFile, wordLine, writeDay, type DataFs, type Habit,
 } from "../src/data";
-import { readPages } from "../src/data/pages";
+import { pagesPath, readPages } from "../src/data/pages";
 
 const DATE = "2026-11-17";
 const PAGES = "pages/2026-11-17.md";
@@ -144,9 +144,8 @@ describe("the count in the day file", () => {
     expect(roomKeepsCount(pages, manual)).toBe(false);
     expect(pagesCountPatch(pages, manual, 12)).toBeNull();
     expect(pagesCountPatch(pages, manual, 0)).toBeNull();
-    // Cleared by hand is set by hand too.
-    const cleared = day("morning_pages_words: null\n_sources:\n  morning_pages_words: manual\n");
-    expect(pagesCountPatch(pages, cleared, 12)).toBeNull();
+    // Typed over a count the room wrote, with a wrong number: it is the hand's from then on.
+    expect(pagesCountPatch(pages, day("morning_pages_words: 9\n_sources:\n  morning_pages_words: manual\n"), 760)).toBeNull();
     // No source on record: typed into the file, as far as the app can tell.
     const unrecorded = day("morning_pages_words: 420\n");
     expect(roomKeepsCount(pages, unrecorded)).toBe(false);
@@ -156,6 +155,22 @@ describe("the count in the day file", () => {
     expect(roomKeepsCount(pages, parseDay(null, DATE))).toBe(true);
   });
 
+  it("is nobody's when it is empty, whatever _sources says: the room writes over it", () => {
+    const patch = { values: { morning_pages_words: 760 }, sources: { morning_pages_words: "morning_pages" } };
+    // Cleared in the grid: one key pressed on the box leaves `null`, marked manual. The room counts that day again.
+    const cleared = day("morning_pages_words: null\n_sources:\n  morning_pages_words: manual\n");
+    expect(roomKeepsCount(pages, cleared)).toBe(true);
+    expect(pagesCountPatch(pages, cleared, 760)).toEqual(patch);
+    expect(updateDayFile("---\nmorning_pages_words: null\n_sources:\n  morning_pages_words: manual\n---\n", DATE, patch)).toBe(
+      "---\ndate: 2026-11-17\nmorning_pages_words: 760\n_sources:\n  morning_pages_words: morning_pages\n---\n",
+    );
+    // The same with any other entry, and with an entry and no key at all.
+    expect(pagesCountPatch(pages, day("morning_pages_words: null\n_sources:\n  morning_pages_words: intervals\n"), 760)).toEqual(patch);
+    expect(pagesCountPatch(pages, day("_sources:\n  morning_pages_words: manual\n"), 760)).toEqual(patch);
+    // With no words there is nothing to put there, and an empty count someone else left is left as it is.
+    expect(pagesCountPatch(pages, cleared, 0)).toBeNull();
+  });
+
   it("is taken out again, with its source, when the pages have no words left", () => {
     const written = "---\ndate: 2026-11-17\nmood: 3\nmorning_pages_words: 12\n_sources:\n  mood: manual\n  morning_pages_words: morning_pages\n---\n\nnotes\n";
     const patch = pagesCountPatch(pages, parseDay(written, DATE), 0)!;
@@ -163,6 +178,38 @@ describe("the count in the day file", () => {
     // Nothing of the room's there: nothing to take out, and no file to make.
     expect(pagesCountPatch(pages, parseDay(null, DATE), 0)).toBeNull();
     expect(pagesCountPatch(pages, day("morning_pages_words: null\n"), 0)).toBeNull();
+  });
+
+  it("leaves no empty _sources behind when its entry was the only one there", () => {
+    const empty = (file: string) => updateDayFile(file, DATE, pagesCountPatch(pages, parseDay(file, DATE), 0)!);
+    // Written out over lines, as the app writes it, and on one line, as a hand might.
+    expect(empty("---\ndate: 2026-11-17\nmood: 3\nmorning_pages_words: 12\n_sources:\n  morning_pages_words: morning_pages\n---\n\nnotes\n")).toBe(
+      "---\ndate: 2026-11-17\nmood: 3\n---\n\nnotes\n",
+    );
+    expect(empty("---\nmorning_pages_words: 12\n_sources: {morning_pages_words: morning_pages}\n_synced_at: 2026-11-17T06:27:00-08:00\n---\n")).toBe(
+      "---\ndate: 2026-11-17\n_synced_at: 2026-11-17T06:27:00-08:00\n---\n",
+    );
+    // An entry that is somebody else's stays, and so does the map that holds it.
+    expect(empty("---\nmorning_pages_words: 12\n_sources:\n  morning_pages_words: morning_pages\n  mood: manual\n---\n")).toBe(
+      "---\ndate: 2026-11-17\n_sources:\n  mood: manual\n---\n",
+    );
+    // Only this patch tidies up after itself. Taking a source entry out any other way leaves the file as it always did.
+    const other = "---\ndate: 2026-11-17\nsleep_h: 7\n_sources:\n  sleep_h: manual\n---\n";
+    expect(updateDayFile(other, DATE, { values: { sleep_h: undefined }, sources: { sleep_h: undefined } })).toBe("---\ndate: 2026-11-17\n_sources:\n---\n");
+    expect(updateDayFile(other, DATE, { values: { sleep_h: undefined }, sources: { sleep_h: undefined }, tidy: true })).toBe("---\ndate: 2026-11-17\n---\n");
+  });
+
+  it("can be handed back to the room, whoever set it: it becomes what the pages hold, as the room's own", () => {
+    const manual = day("morning_pages_words: 300\n_sources:\n  morning_pages_words: manual\n");
+    expect(roomCountPatch(pages, manual, 760)).toEqual({ values: { morning_pages_words: 760 }, sources: { morning_pages_words: "morning_pages" } });
+    // The same number, in the hand's name, still changes hands.
+    expect(roomCountPatch(pages, day("morning_pages_words: 760\n_sources:\n  morning_pages_words: manual\n"), 760)).not.toBeNull();
+    expect(roomCountPatch(pages, day("morning_pages_words: 420\n"), 3)).toEqual({ values: { morning_pages_words: 3 }, sources: { morning_pages_words: "morning_pages" } });
+    // Already the room's, and right: nothing to do.
+    expect(roomCountPatch(pages, day("morning_pages_words: 760\n_sources:\n  morning_pages_words: morning_pages\n"), 760)).toBeNull();
+    // With no pages to count, the count goes.
+    expect(roomCountPatch(pages, manual, 0)).toEqual({ values: { morning_pages_words: undefined }, sources: { morning_pages_words: undefined }, tidy: true });
+    expect(roomCountPatch(pages, parseDay(null, DATE), 0)).toBeNull();
   });
 
   it("goes to the habit the room feeds: the first on show with morning_pages as its source", () => {
@@ -258,11 +305,76 @@ describe("saving pages", () => {
     expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(5);
     expect(await savePages(fs, DATE, "", at(words(5)), pages)).toEqual({ words: 0, count: "kept" });
     expect(fs.files.get(PAGES)).toBe("");
-    expect(fs.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmood: 3\n_sources:\n---\n");
+    expect(fs.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmood: 3\n---\n");
     // Only white space is no words either.
     await savePages(fs, DATE, "  \n ", at(""), pages);
     expect(fs.files.get(PAGES)).toBe("  \n ");
     expect(parseDay(fs.files.get(DAY)!, DATE).values).toEqual({ mood: 3 });
+  });
+
+  it("leaves no stub of a day file behind when the count was all the file held", async () => {
+    const fs = folder();
+    await savePages(fs, DATE, "one two three", at(""), pages);
+    expect(fs.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmorning_pages_words: 3\n_sources:\n  morning_pages_words: morning_pages\n---\n");
+    await savePages(fs, DATE, "", at("one two three"), pages);
+    // The count is gone, and the file that held nothing else has gone with it.
+    expect(fs.files.has(DAY)).toBe(false);
+    expect(fs.files.get(PAGES)).toBe("");
+
+    // A file with anything else in it stays: a key, a comment, a note, a date that isn't its own.
+    for (const kept of [
+      "---\ndate: 2026-11-17\nmood: 3\n---\n",
+      "---\ndate: 2026-11-17\n# mine\n---\n",
+      "---\ndate: 2026-11-17\n---\n\nA note.\n",
+      "---\ndate: 2026-11-16\n---\n",
+      "---\r\ndate: 2026-11-17\r\n---\r\n",
+    ]) {
+      const other = folder({ [DAY]: kept });
+      await savePages(other, DATE, "one two", at(""), pages);
+      await savePages(other, DATE, "", at("one two"), pages);
+      expect(other.files.get(DAY)).toBe(kept);
+    }
+    // And a stub that was there before the room wrote anything is not removed for pages that were only looked at.
+    const stub = folder({ [DAY]: "---\ndate: 2026-11-17\n---\n" });
+    await savePages(stub, DATE, "", at(""), pages);
+    expect(stub.files.get(DAY)).toBe("---\ndate: 2026-11-17\n---\n");
+  });
+
+  it("writes the count for text it finds in the file, not only for text it wrote", async () => {
+    // 800 words written in another app, and no count anywhere. The room opens on them and is left: the count is owed.
+    const fs = folder({ [PAGES]: words(800) });
+    expect(await savePages(fs, DATE, words(800), at(words(800)), pages)).toEqual({ words: 800, count: "kept" });
+    expect(fs.written).toEqual([DAY]);
+    expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(800);
+    // A count that is behind the text, because the text was changed elsewhere, is brought up to it.
+    fs.files.set(PAGES, words(405));
+    await savePages(fs, DATE, words(405), at(words(405)), pages);
+    expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(405);
+  });
+
+  it("says how many words a day's pages hold, and nothing else of them", async () => {
+    const fs = folder({ [PAGES]: "\uFEFFone two\r\nthree\r\n" });
+    expect(await pagesWords(fs, DATE)).toBe(3);
+    expect(await pagesWords(fs, "2026-11-16")).toBe(0);
+    expect(await pagesWords(folder({ [PAGES]: "" }), DATE)).toBe(0);
+    expect(fs.written).toEqual([]);
+  });
+
+  it("hands a count set by hand back to the room", async () => {
+    const manual = "---\ndate: 2026-11-17\nmood: 3\nmorning_pages_words: 300\n_sources:\n  mood: manual\n  morning_pages_words: manual\n---\n\nNotes.\n";
+    const fs = folder({ [PAGES]: words(760), [DAY]: manual });
+    const saved = await takeRoomCount(fs, DATE, pages);
+    expect(saved.values.morning_pages_words).toBe(760);
+    expect(saved.sources.morning_pages_words).toBe("morning_pages");
+    expect(fs.files.get(DAY)).toBe(manual.replace("morning_pages_words: 300", "morning_pages_words: 760").replace("morning_pages_words: manual", "morning_pages_words: morning_pages"));
+    expect(fs.written).toEqual([DAY]);
+    // From then on the room keeps it.
+    await savePages(fs, DATE, words(5), at(words(760)), pages);
+    expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(5);
+    // With no pages there is nothing to count: the hand's count goes, and the rest of the file stays.
+    const none = folder({ [DAY]: manual });
+    await takeRoomCount(none, DATE, pages);
+    expect(none.files.get(DAY)).toBe("---\ndate: 2026-11-17\nmood: 3\n_sources:\n  mood: manual\n---\n\nNotes.\n");
   });
 
   it("keeps the file's line endings and byte order mark, and shows the text without them", async () => {
@@ -361,6 +473,99 @@ describe("saving pages", () => {
     await savePages(fs, DATE, "theirs", same, null);
     expect(same.text).toBe("theirs");
     expect(fs.written).toEqual([]);
+  });
+});
+
+describe("a save that the folder never answers", () => {
+  /** A folder whose writes to the pages file wait to be let through, one after another, as the shell keeps them. */
+  function held(files: Record<string, string> = {}) {
+    const inner = folder(files);
+    const waiting: (() => void)[] = [];
+    let before: Promise<void> = Promise.resolve();
+    const fs: DataFs = {
+      ...inner,
+      write: (path, text) => {
+        if (path !== PAGES) return inner.write(path, text);
+        const gate = new Promise<void>((resolve) => waiting.push(resolve));
+        before = Promise.all([before, gate]).then(() => inner.write(path, text));
+        return before;
+      },
+    };
+    return Object.assign(fs, { files: inner.files, written: inner.written, land: (n: number) => waiting[n]() });
+  }
+
+  it("does not move what the file is known to hold if its write lands after it was given up on", async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = held({ [PAGES]: "One." });
+      const base = at("One.");
+      const stuck = savePages(fs, DATE, "One. Two.", base, pages).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      expect(await stuck).toBeInstanceOf(FileTimeoutError);
+      expect((await stuck).message).toBe("No answer from the data folder for pages/2026-11-17.md after 30 seconds");
+      // A newer save, behind it. The file still holds what the room knows it to hold, so it is let through.
+      const newer = savePages(fs, DATE, "One. Two. Three.", base, pages);
+      await vi.advanceTimersByTimeAsync(10);
+      // The stuck write lands at last. It was given up on: it says nothing about what the file holds now.
+      fs.land(0);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fs.files.get(PAGES)).toBe("One. Two.");
+      expect(base.text).toBe("One.");
+      // The newer one lands after it, never before, and the file ends with the newer text and its count.
+      fs.land(1);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await newer).toEqual({ words: 3, count: "kept" });
+      expect(fs.files.get(PAGES)).toBe("One. Two. Three.");
+      expect(base.text).toBe("One. Two. Three.");
+      expect(parseDay(fs.files.get(DAY)!, DATE).values.morning_pages_words).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is not taken for a change made elsewhere when it lands late and the same text is saved again", async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = held({ [PAGES]: "One." });
+      const base = at("One.");
+      const stuck = savePages(fs, DATE, "One. Two.", base, pages).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      expect(await stuck).toBeInstanceOf(FileTimeoutError);
+      fs.land(0);
+      await vi.advanceTimersByTimeAsync(10);
+      // The room still has the text as unsaved and tries again. The file already holds it: nothing to write, nothing to ask.
+      const again = savePages(fs, DATE, "One. Two.", base, pages);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await again).toEqual({ words: 2, count: "kept" });
+      expect(base.text).toBe("One. Two.");
+      expect(fs.written.filter((path) => path === PAGES).length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes nothing if it was given up on while the file was still being read", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = folder({ [PAGES]: "One." });
+      const answers: (() => void)[] = [];
+      let stuck = true;
+      const fs: DataFs = { ...inner, read: (path) => (stuck && path === PAGES ? new Promise<void>((resolve) => answers.push(resolve)).then(() => inner.read(path)) : inner.read(path)) };
+      const base = at("One.");
+      const given = savePages(fs, DATE, "One. Old.", base, pages).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      expect(await given).toBeInstanceOf(FileTimeoutError);
+      stuck = false;
+      await savePages(fs, DATE, "One. Newer.", base, pages);
+      // The read that was stuck comes back. The save it belonged to does not now write its older text over the newer.
+      answers[0]();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(inner.files.get(PAGES)).toBe("One. Newer.");
+      expect(base.text).toBe("One. Newer.");
+      expect(inner.written.filter((path) => path === PAGES).length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
