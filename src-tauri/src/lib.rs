@@ -1,10 +1,13 @@
-//! Rust shell: the data folder, file access scoped to it, and the Keychain.
+//! Rust shell: the data folder, file access scoped to it, the Keychain, and
+//! the network.
 //!
 //! The webview never gets an arbitrary file API. Every file command takes a
 //! path relative to the data folder and refuses anything that would leave it.
+//! Nor does it get the network: `net` fetches from two fixed hosts.
 
 mod files;
 mod keychain;
+mod net;
 
 use std::{
     path::{Path, PathBuf},
@@ -17,9 +20,32 @@ use tauri_plugin_dialog::DialogExt;
 
 const SUGGESTED_FOLDER: &str = "Wetware Data";
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct AppConfig {
     data_root: Option<PathBuf>,
+    #[serde(default)]
+    sync: SyncState,
+}
+
+/// What the app remembers about syncing. It lives here, in the app's own
+/// config, and not in the user's data folder.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct SyncState {
+    /// When a sync last reached a source, in milliseconds since 1970.
+    last_synced_ms: Option<u64>,
+    /// Whether the user has been told that intervals.icu isn't connected. It is said once.
+    intervals_hint_shown: bool,
+}
+
+impl AppConfig {
+    /// The config with `root` as the data folder. When a sync last ran
+    /// belongs to the folder it ran on, so it is forgotten if the folder changes.
+    fn with_data_root(&self, root: PathBuf) -> Self {
+        let same = self.data_root.as_ref() == Some(&root);
+        let last_synced_ms = if same { self.sync.last_synced_ms } else { None };
+        AppConfig { data_root: Some(root), sync: SyncState { last_synced_ms, ..self.sync.clone() } }
+    }
 }
 
 struct Shell {
@@ -72,11 +98,17 @@ fn set_data_root(app: &AppHandle, shell: &Shell, root: PathBuf) -> CmdResult<Str
         return Err("Data folder must be an absolute path".into());
     }
     std::fs::create_dir_all(&root).map_err(err)?;
-    let next = AppConfig { data_root: Some(root.clone()) };
+    let next = shell.config.lock().map_err(err)?.with_data_root(root.clone());
+    save_config(app, shell, next)?;
+    Ok(shown(&root))
+}
+
+/// Write the config to disk, then keep it. Nothing changes if the write fails.
+fn save_config(app: &AppHandle, shell: &Shell, next: AppConfig) -> CmdResult<()> {
     let json = serde_json::to_string_pretty(&next).map_err(err)?;
     files::write_atomic(&config_path(app)?, json.as_bytes())?;
     *shell.config.lock().map_err(err)? = next;
-    Ok(shown(&root))
+    Ok(())
 }
 
 fn suggested_root(app: &AppHandle) -> CmdResult<PathBuf> {
@@ -145,6 +177,19 @@ fn data_list(shell: State<Shell>, dir: String) -> CmdResult<Vec<String>> {
     files::list(&data_root(&shell)?, &dir)
 }
 
+#[tauri::command]
+fn sync_state_get(shell: State<Shell>) -> CmdResult<SyncState> {
+    trace("sync_state_get");
+    Ok(shell.config.lock().map_err(err)?.sync.clone())
+}
+
+#[tauri::command]
+fn sync_state_set(app: AppHandle, shell: State<Shell>, state: SyncState) -> CmdResult<()> {
+    trace("sync_state_set");
+    let next = AppConfig { sync: state, ..shell.config.lock().map_err(err)?.clone() };
+    save_config(&app, &shell, next)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -166,6 +211,10 @@ pub fn run() {
             keychain::intervals_key_set,
             keychain::intervals_key_exists,
             keychain::intervals_key_delete,
+            net::intervals_fetch,
+            net::weather_fetch,
+            sync_state_get,
+            sync_state_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -179,7 +228,40 @@ mod tests {
     fn file_commands_need_a_data_folder() {
         let shell = Shell { config: Mutex::new(AppConfig::default()) };
         assert!(data_root(&shell).is_err());
-        let shell = Shell { config: Mutex::new(AppConfig { data_root: Some("/data".into()) }) };
+        let config = AppConfig { data_root: Some("/data".into()), ..AppConfig::default() };
+        let shell = Shell { config: Mutex::new(config) };
         assert_eq!(data_root(&shell).unwrap(), Path::new("/data"));
+    }
+
+    #[test]
+    fn a_config_written_before_sync_existed_still_loads() {
+        let old: AppConfig = serde_json::from_str(r#"{ "data_root": "/data" }"#).unwrap();
+        assert_eq!(old, AppConfig { data_root: Some("/data".into()), sync: SyncState::default() });
+        assert_eq!(old.sync, SyncState { last_synced_ms: None, intervals_hint_shown: false });
+        let partial: AppConfig = serde_json::from_str(r#"{ "data_root": null, "sync": { "last_synced_ms": 5 } }"#).unwrap();
+        assert_eq!(partial.sync, SyncState { last_synced_ms: Some(5), intervals_hint_shown: false });
+    }
+
+    #[test]
+    fn sync_state_round_trips_under_the_names_the_webview_uses() {
+        let state = SyncState { last_synced_ms: Some(1_795_023_667_000), intervals_hint_shown: true };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json, serde_json::json!({ "last_synced_ms": 1_795_023_667_000u64, "intervals_hint_shown": true }));
+        assert_eq!(serde_json::from_value::<SyncState>(json).unwrap(), state);
+        // It holds nothing but those two: there is no place in it for a key.
+        assert_eq!(serde_json::to_value(SyncState::default()).unwrap().as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_last_sync_is_forgotten_when_the_data_folder_changes_and_kept_when_it_does_not() {
+        let sync = SyncState { last_synced_ms: Some(42), intervals_hint_shown: true };
+        let config = AppConfig { data_root: Some("/data".into()), sync: sync.clone() };
+        assert_eq!(config.with_data_root("/data".into()), config);
+        assert_eq!(
+            config.with_data_root("/other".into()),
+            AppConfig { data_root: Some("/other".into()), sync: SyncState { last_synced_ms: None, intervals_hint_shown: true } }
+        );
+        let first = AppConfig::default().with_data_root("/data".into());
+        assert_eq!(first, AppConfig { data_root: Some("/data".into()), sync: SyncState::default() });
     }
 }
