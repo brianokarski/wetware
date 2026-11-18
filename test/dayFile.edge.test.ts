@@ -98,11 +98,34 @@ describe("B2: patching one key leaves every other byte alone", () => {
   });
 
   it("adds a missing date first and keeps one that disagrees with the file name", () => {
-    expect(updateDayFile("---\n# mine\nmood: 1\n---\n", DATE, {})).toBe("---\n# mine\ndate: 2026-11-17\nmood: 1\n---\n");
+    expect(updateDayFile("---\n# mine\nmood: 1\n---\n", DATE, { values: { run: true } })).toBe("---\n# mine\ndate: 2026-11-17\nmood: 1\nrun: true\n---\n");
+    expect(updateDayFile("---\n# mine\nmood: 1\n---\n", DATE, { sources: { mood: "manual" } })).toContain("# mine\ndate: 2026-11-17\nmood: 1\n");
     expect(updateDayFile("---\n---\nbody\n", DATE, mood4)).toBe("---\ndate: 2026-11-17\nmood: 4\n---\nbody\n");
     const other = "---\ndate: 2026-11-18\n---\nb\n";
     expect(updateDayFile(other, DATE, {})).toBe(other);
     expect(parseDay(other, DATE).date).toBe(DATE);
+  });
+
+  it("leaves the frontmatter exactly as it is when only the notes change, date or no date", () => {
+    // No date key, a comment, odd spacing: a change to the notes is not the moment to tidy any of it.
+    const undated = "---\n# mine\nmood:   1\ncaffeine_mg: 180\n---\n\nold\n";
+    expect(updateDayFile(undated, DATE, { notes: "new\n" })).toBe("---\n# mine\nmood:   1\ncaffeine_mg: 180\n---\n\nnew\n");
+    expect(updateDayFile(undated, DATE, { body: "\nnew\n" })).toBe("---\n# mine\nmood:   1\ncaffeine_mg: 180\n---\n\nnew\n");
+    expect(updateDayFile(undated, DATE, { notes: "old\n" })).toBe(undated);
+    expect(updateDayFile(undated, DATE, {})).toBe(undated);
+    expect(updateDayFile("---\n---\nbody\n", DATE, { notes: "new\n" })).toBe("---\n---\nnew\n");
+    // A file that is only text stays only text.
+    expect(updateDayFile("Just notes.\n", DATE, { notes: "Just notes.\nAnd more.\n" })).toBe("Just notes.\nAnd more.\n");
+    expect(updateDayFile("Just notes.\n", DATE, {})).toBe("Just notes.\n");
+    expect(updateDayFile("\uFEFFJust notes.\r\n", DATE, { notes: "Just notes.\nMore.\n" })).toBe("\uFEFFJust notes.\r\nMore.\r\n");
+    // Until a value is set: then it gets its frontmatter, date first, and the text is still all there.
+    expect(updateDayFile("Just notes.\n", DATE, mood4)).toBe("---\ndate: 2026-11-17\nmood: 4\n---\nJust notes.\n");
+    // A day with no file yet is given one that says which day it is.
+    expect(updateDayFile(null, DATE, { notes: "first\n" })).toBe("---\ndate: 2026-11-17\n---\n\nfirst\n");
+    expect(updateDayFile("", DATE, { notes: "first\n" })).toBe("---\ndate: 2026-11-17\n---\n\nfirst\n");
+    // But not for notes that are as empty as they were: nothing has been said about that day.
+    expect(updateDayFile(null, DATE, { notes: "" })).toBe("");
+    expect(updateDayFile(null, DATE, {})).toBe("");
   });
 
   it("works when the closing fence ends the file", () => {

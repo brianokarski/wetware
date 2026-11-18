@@ -3,7 +3,7 @@ import { Mono } from "../components/primitives";
 import {
   cellNoticeKey, cellPatch, cellState, dayNoticeKey, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate,
   monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, parseCellInput, previousMonth, readDay,
-  reason, sameMonth, shortNumber, weekdayInitial, withPatch, writeCell,
+  reason, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
 import { lastSyncedLabel } from "../sync";
@@ -45,17 +45,9 @@ const HEADER_ROW = -1;
  */
 const VALUE_WIDTH = 5;
 const VALUE_WIDTH_NARROW = 3;
-const TYPED = new Set(["number", "scale", "duration", "progress"]);
+const TYPED = new Set<string>(Object.keys(TYPED_INPUT));
 /** Types whose cells show the number itself. A progress cell shows a fill instead. */
 const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
-
-/** What each type of habit accepts, said plainly, for when input is turned down. */
-const ACCEPTS: Record<string, string> = {
-  number: "a number",
-  scale: "a whole number from 1 to 5",
-  duration: "a whole number, 0 or more",
-  progress: "a whole number, 0 or more",
-};
 
 /**
  * The month as a typographic table: habits down the left, a column for each
@@ -232,7 +224,7 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
       const date = dates[editing.col];
       notify(
         cellNoticeKey(date, habit.id),
-        `${habit.name} takes ${ACCEPTS[habit.type]}. "${editing.text.trim()}" was not saved for ${monthAndDay(date)}.`,
+        `${habit.name} takes ${TYPED_INPUT[habit.type]}. "${editing.text.trim()}" was not saved for ${monthAndDay(date)}.`,
       );
     }
   };

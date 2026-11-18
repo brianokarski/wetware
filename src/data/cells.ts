@@ -35,6 +35,9 @@ export interface Cell {
  */
 const EXTERNAL_SOURCES = new Set(["intervals", "weather", "open-meteo"]);
 
+/** Whether the habit is filled by a source outside the app, so that sync can put a value back. */
+export const isSynced = (habit: Habit): boolean => EXTERNAL_SOURCES.has(habit.source);
+
 /** The day's tags (SPEC §6.2). A `tag` habit is on when its id is one of them. */
 export function dayTags(day: Day): string[] {
   return tagList(day.values[TAGS_KEY]);
@@ -96,6 +99,18 @@ export function monthCount(habit: Habit, days: Iterable<Day>, ym: YearMonth): { 
   for (const day of days) if (measure(habit, day).met) done++;
   return { done, total: daysInMonth(ym) };
 }
+
+/**
+ * What a habit of each type takes when its value is typed, said plainly, for
+ * when input is turned down. Check and tag habits are not here: they are
+ * toggled, not typed.
+ */
+export const TYPED_INPUT: Partial<Record<HabitType, string>> = {
+  number: "a number",
+  scale: "a whole number from 1 to 5",
+  duration: "a whole number, 0 or more",
+  progress: "a whole number, 0 or more",
+};
 
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
 const WHOLE = /^\+?\d+$/;

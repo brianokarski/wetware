@@ -133,6 +133,11 @@ describe("a change worked out from the day as it is on disk", () => {
     // One that does change it is written once.
     await writeDay(fs, "2026-11-17", { values: { mood: 5 } });
     expect(fs.writes).toBe(1);
+    // And a day with no file gets none from notes that are still empty, or from no change at all.
+    await writeDay(fs, "2026-11-18", { notes: "" });
+    await writeDay(fs, "2026-11-18", {});
+    expect(fs.writes).toBe(1);
+    expect(fs.files.has("days/2026-11-18.md")).toBe(false);
   });
 
   it("writes nothing and creates no file when the change is null", async () => {

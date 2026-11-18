@@ -266,7 +266,14 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
 
   const ops: YamlOp[] = [];
   // The file name says which day this is. A `date` key that disagrees is kept as the user wrote it.
-  if (!Object.prototype.hasOwnProperty.call(data, "date")) ops.push({ op: "set", path: ["date"], value: date, first: true });
+  // A file that has none is given one when it is created or when its frontmatter is changed anyway.
+  // A change to the notes alone leaves the frontmatter, or the lack of one, exactly as it is.
+  const inFrontmatter = [patch.values, patch.sources, patch.tags].some((part) => part !== undefined) || patch.syncedAt !== undefined;
+  const body = nextBody(parts.body, patch, eol);
+  const created = (raw ?? "") === "" && body !== "";
+  if (!Object.prototype.hasOwnProperty.call(data, "date") && (created || inFrontmatter)) {
+    ops.push({ op: "set", path: ["date"], value: date, first: true });
+  }
 
   for (const [key, value] of Object.entries(patch.values ?? {})) {
     if (RESERVED.has(key)) continue;
@@ -293,7 +300,8 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
     throw e;
   }
 
-  const body = nextBody(parts.body, patch, eol);
+  // No frontmatter before and none to write: the file stays the plain text it was.
+  if (parts.open === "" && yaml === "") return parts.bom + body;
   const open = parts.open || `---${eol}`;
   let close = parts.close || `---${eol}`;
   if (body !== "" && !close.endsWith("\n")) close += eol;
@@ -324,7 +332,8 @@ export function writeDay(fs: DataFs, date: string, change: DayChange): Promise<D
     const patch = typeof change === "function" ? change(parseDay(raw, date)) : change;
     if (patch === null) return parseDay(raw, date);
     const next = updateDayFile(raw, date, patch);
-    if (next !== raw) await fs.write(path, next);
+    // A patch that changes nothing writes nothing, and doesn't bring an empty file into being.
+    if (next !== (raw ?? "")) await fs.write(path, next);
     return parseDay(next, date);
   });
 }

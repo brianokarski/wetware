@@ -6,5 +6,6 @@ export * from "./dayFile";
 export * from "./input";
 export * from "./month";
 export * from "./cells";
+export * from "./dayView";
 export * from "./notices";
 export { YamlPatchError } from "./yamlPatch";
