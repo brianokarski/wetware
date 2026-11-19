@@ -420,16 +420,14 @@ describe("a file operation that never comes back", () => {
     try {
       const path = "days/2026-11-16.md";
       const inner = memoryFs({ [path]: "---\ndate: 2026-11-16\n---\n\nOne.\n" });
-      let land!: () => void;
-      let first = true;
-      // The shell keeps writes to one file in order: the second waits for the first to land.
+      // Writes wait to be let through, one after another, in the order they were asked for: as the shell keeps them.
+      const waiting: (() => void)[] = [];
       let before: Promise<void> = Promise.resolve();
       const fs: DataFs = {
         ...inner,
         write: (p, text) => {
-          const held = first ? new Promise<void>((resolve) => (land = resolve)) : Promise.resolve();
-          first = false;
-          before = Promise.all([before, held]).then(() => inner.write(p, text));
+          const gate = new Promise<void>((resolve) => waiting.push(resolve));
+          before = Promise.all([before, gate]).then(() => inner.write(p, text));
           return before;
         },
       };
@@ -440,12 +438,16 @@ describe("a file operation that never comes back", () => {
       // A newer save is asked for. Its own check is made against what the file holds now, which is still "One.".
       const newer = writeNotes(fs, "2026-11-16", "One.\nTwo. Three.", base);
       await vi.advanceTimersByTimeAsync(10);
-      // The stuck write lands at last, and the newer one after it, in the order they were asked for.
-      land();
+      // The stuck write lands at last. It was given up on: it says nothing about what the file holds now.
+      waiting[0]();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(inner.files.get(path)).toBe("---\ndate: 2026-11-16\n---\n\nOne.\nTwo.");
+      expect(base.text).toBe("One.\n");
+      // The newer one lands after it, and what the file is known to hold is what that one wrote.
+      waiting[1]();
       await vi.advanceTimersByTimeAsync(10);
       expect((await newer).notes).toBe("One.\nTwo. Three.");
       expect(inner.files.get(path)).toBe("---\ndate: 2026-11-16\n---\n\nOne.\nTwo. Three.");
-      // What the file is known to hold is what the newer save wrote, not what the abandoned one did.
       expect(base.text).toBe("One.\nTwo. Three.");
     } finally {
       vi.useRealTimers();

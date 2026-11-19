@@ -2660,6 +2660,26 @@ const scenarios = [
     size: SMALL,
     async run(t) {
       await t.openPages();
+      // At this width a long message would run to three lines and more. It keeps to its two, with the way to
+      // dismiss it beside it, and the text below stays where it was.
+      const top = () => t.page.$eval(".room-field", (el) => el.getBoundingClientRect().top + window.scrollY);
+      const before = await top();
+      const long = `The folder said no (os error 5): ${"a very long reason from the operating system, ".repeat(12)}and that is all.`;
+      await t.page.evaluate((message) => window.wetware.failWrites(message), long);
+      await t.page.keyboard.type("x");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent.includes("The folder said no"));
+      assert.equal(await top(), before);
+      const said = await t.page.evaluate(() => {
+        const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const line = parseFloat(getComputedStyle(document.querySelector(".room-notice")).lineHeight);
+        return { lines: box(".room-said").height / line, dismiss: box(".room-said button").right, width: window.innerWidth, sideways: document.documentElement.scrollWidth > window.innerWidth };
+      });
+      assert.ok(Math.abs(said.lines - 2) < 0.05, `what the room says takes ${said.lines} lines`);
+      assert.ok(said.dismiss <= said.width && !said.sideways, "the message pushes its action off the window");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Backspace");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent === "");
+      assert.equal(await top(), before);
       await t.insert(prose(760));
       await t.page.waitForFunction(() => document.querySelectorAll(".room-mark").length === 3);
       assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
@@ -2864,7 +2884,8 @@ const scenarios = [
       // The page being shown again (a laptop opened, the app still in front) is enough for the screen to catch up.
       assert.equal(await t.page.$eval(".app > .meta-row > :nth-child(3)", (el) => el.textContent), "2026-11-17");
       await t.page.evaluate(() => void document.dispatchEvent(new Event("visibilitychange")));
-      await t.page.waitForFunction(() => document.querySelector(".app > .meta-row > :nth-child(3)").textContent === "2026-11-18");
+      // At once, not at the next half-minute tick.
+      await t.page.waitForFunction(() => document.querySelector(".app > .meta-row > :nth-child(3)").textContent === "2026-11-18", { timeout: 1500 });
       assert.equal(await t.page.$eval(".grid-day[data-today] .grid-day-button", (el) => el.dataset.date), "2026-11-18");
     },
   },
@@ -2983,8 +3004,13 @@ const scenarios = [
       await t.ready();
       assert.equal(await count(), "morning_pages_words: 405");
       assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 405 of 750 words");
-      // "Take the file's text": the count follows that too.
+      // "Take the file's text": the count follows that too. (Something is typed and saved first, so that the count
+      // is the room's own and up to date when the file changes under it.)
       await t.openPages();
+      await t.page.keyboard.type(" Saved first.");
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith(" Saved first."), {}, PAGES);
+      await t.saved();
+      assert.equal(await count(), "morning_pages_words: 407");
       await t.page.evaluate((path) => window.wetware.write(path, "Three words now."), PAGES);
       await t.page.keyboard.type(" Typed over.");
       await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 2);

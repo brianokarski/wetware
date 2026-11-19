@@ -197,6 +197,20 @@ describe("the count in the day file", () => {
     const other = "---\ndate: 2026-11-17\nsleep_h: 7\n_sources:\n  sleep_h: manual\n---\n";
     expect(updateDayFile(other, DATE, { values: { sleep_h: undefined }, sources: { sleep_h: undefined } })).toBe("---\ndate: 2026-11-17\n_sources:\n---\n");
     expect(updateDayFile(other, DATE, { values: { sleep_h: undefined }, sources: { sleep_h: undefined }, tidy: true })).toBe("---\ndate: 2026-11-17\n---\n");
+    // A patch that takes the only entry out and puts another in leaves a map with the new one in it.
+    expect(updateDayFile(other, DATE, { values: { sleep_h: undefined, mood: 3 }, sources: { sleep_h: undefined, mood: "manual" }, tidy: true })).toBe(
+      "---\ndate: 2026-11-17\nmood: 3\n_sources:\n  mood: manual\n---\n",
+    );
+  });
+
+  it("a file is removed only if it holds what was expected (the folder used in these tests keeps the shell's rule)", async () => {
+    const fs = folder({ [DAY]: "---\ndate: 2026-11-17\n---\n" });
+    await expect(fs.remove(DAY, "something else")).rejects.toThrow("days/2026-11-17.md has changed, so it was not removed");
+    expect(fs.files.has(DAY)).toBe(true);
+    await fs.remove(DAY, "---\ndate: 2026-11-17\n---\n");
+    expect(fs.files.has(DAY)).toBe(false);
+    // Already gone is gone.
+    await fs.remove(DAY, "anything");
   });
 
   it("can be handed back to the room, whoever set it: it becomes what the pages hold, as the room's own", () => {
