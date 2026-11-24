@@ -63,6 +63,14 @@
   --col-gutter: var(--space-6);
   --measure: 60rem; /* max width of a ruled table */
 
+  /* ── Day view ── */
+  --col-label-day: 10rem; /* habit names beside their values */
+  --size-notes: 0.8125rem; /* the day's notes, set in mono */
+  --leading-notes: 1.6;
+  --notes-min: 18rem; /* least height of the notes field */
+  --day-box: 1.125rem; /* the box of a check or tag habit: as tall as a line of body text */
+  --day-box-inset: 0.1875rem; /* space around the mark inside it */
+
   /* ── Rules ── */
   --rule-weight: 1px;
   --rule: var(--rule-weight) solid var(--color-rule);

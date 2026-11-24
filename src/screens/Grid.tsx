@@ -3,7 +3,7 @@ import { Mono } from "../components/primitives";
 import {
   cellNoticeKey, cellPatch, cellState, dayNoticeKey, dayPath, daysInMonth, describeCell, habitHint, loadMonth, longDate,
   monthAndDay, monthCount, monthDates, monthKey, monthName, monthOf, nextMonth, parseCellInput, previousMonth, readDay,
-  reason, sameMonth, shortNumber, weekdayInitial, withPatch, writeCell,
+  reason, sameMonth, shortNumber, TYPED_INPUT, weekdayInitial, withPatch, writeCell,
   type Cell, type CellValue, type DataFs, type Day, type Habit, type YearMonth,
 } from "../data";
 import { lastSyncedLabel } from "../sync";
@@ -13,8 +13,15 @@ interface Props {
   habits: Habit[];
   /** Today's date key. */
   today: string;
-  /** Opens the day panel. It arrives in Milestone 4; until then the hook does nothing. */
+  /** Asks for a day to be opened in the day view. Whether it can be (not a day still to come) is decided there. */
   onOpenDay: (date: string) => void;
+  /** Called once the grid has opened at `openAt`. */
+  onArrive: () => void;
+  /**
+   * A day to open the grid on, with the keyboard on its header: the day the
+   * day view was showing when it was closed. Null: this month, at today.
+   */
+  openAt: string | null;
   /**
    * Puts something on the message line: a failed save, input that wasn't
    * accepted, a file that needs fixing. `key` says what it is about.
@@ -38,6 +45,7 @@ interface Position {
 }
 
 const HEADER_ROW = -1;
+
 /**
  * Most characters a value gets in its box: when the boxes are wide enough to
  * set that many legibly, and when they aren't. The full value is always in
@@ -45,26 +53,22 @@ const HEADER_ROW = -1;
  */
 const VALUE_WIDTH = 5;
 const VALUE_WIDTH_NARROW = 3;
-const TYPED = new Set(["number", "scale", "duration", "progress"]);
+const TYPED = new Set<string>(Object.keys(TYPED_INPUT));
 /** Types whose cells show the number itself. A progress cell shows a fill instead. */
 const SHOWS_NUMBER = new Set(["number", "scale", "duration"]);
-
-/** What each type of habit accepts, said plainly, for when input is turned down. */
-const ACCEPTS: Record<string, string> = {
-  number: "a number",
-  scale: "a whole number from 1 to 5",
-  duration: "a whole number, 0 or more",
-  progress: "a whole number, 0 or more",
-};
 
 /**
  * The month as a typographic table: habits down the left, a column for each
  * day, a count at the right edge. One tab stop; arrow keys move between cells.
  */
-export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSync }: Props) {
-  const [month, setMonth] = useState<YearMonth>(() => monthOf(today));
+export function Grid({ fs, habits, today, onOpenDay, openAt, onArrive, notify, settle, sync, onSync }: Props) {
+  const [month, setMonth] = useState<YearMonth>(() => monthOf(openAt ?? today));
   const [days, setDays] = useState<Record<string, Day> | null>(null);
-  const [wanted, setFocus] = useState<Position>(() => ({ row: 0, col: Number(today.slice(8)) - 1 }));
+  const [wanted, setFocus] = useState<Position>(() =>
+    openAt ? { row: HEADER_ROW, col: Number(openAt.slice(8)) - 1 } : { row: 0, col: Number(today.slice(8)) - 1 },
+  );
+  /** Whether the keyboard is still to be put on the header of the day the grid was opened at. */
+  const returning = useRef(openAt !== null);
   /** The open editor. `replace`: the text is selected when it opens, so typing replaces it. */
   const [editing, setEditing] = useState<(Position & { text: string; replace: boolean }) | null>(null);
   const table = useRef<HTMLTableElement>(null);
@@ -98,17 +102,14 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
     loadMonth(fs, month).then(
       (loaded) => {
         if (stale) return;
-        // Two kinds of day keep what they show, since what was just read may be older than it:
-        // one with an edit still on its way to disk, whose own result follows, and one edited
-        // since this reading began, whose result is already on screen.
-        const pending = (date: string) => (inFlight.current.get(date) ?? 0) > 0;
+        // A day edited since this reading began keeps what it shows: what was read of it may be older
+        // than the edit, whose own result is on screen or on its way. An edit made before the reading
+        // began needs no such care: the month is not read until every write asked for has landed.
         const editedSince = (date: string) => (edits.current.at.get(date) ?? 0) > began;
         setDays((shown) =>
           fresh || !shown
             ? loaded
-            : Object.fromEntries(
-                Object.entries(loaded).map(([date, day]) => [date, pending(date) || editedSince(date) ? (shown[date] ?? day) : day]),
-              ),
+            : Object.fromEntries(Object.entries(loaded).map(([date, day]) => [date, editedSince(date) ? (shown[date] ?? day) : day])),
         );
         // The month is here, and so is every day in it that could be read.
         const readable = Object.values(loaded).filter((day) => !day.error);
@@ -141,6 +142,12 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
     if (editing === null && refocus.current) {
       refocus.current = false;
       element(focus)?.focus();
+    }
+    // Back from a day: the keyboard goes where it was when the day was opened, or to that day's header.
+    if (returning.current && element(focus)) {
+      returning.current = false;
+      element(focus)?.focus();
+      onArrive();
     }
   });
 
@@ -232,7 +239,7 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
       const date = dates[editing.col];
       notify(
         cellNoticeKey(date, habit.id),
-        `${habit.name} takes ${ACCEPTS[habit.type]}. "${editing.text.trim()}" was not saved for ${monthAndDay(date)}.`,
+        `${habit.name} takes ${TYPED_INPUT[habit.type]}. "${editing.text.trim()}" was not saved for ${monthAndDay(date)}.`,
       );
     }
   };
@@ -361,6 +368,7 @@ export function Grid({ fs, habits, today, onOpenDay, notify, settle, sync, onSyn
                     data-date={date}
                     tabIndex={focus.row === HEADER_ROW && focus.col === col ? 0 : -1}
                     aria-label={facts.filter(Boolean).join(", ")}
+                    aria-disabled={date > today || undefined}
                     title={day?.error ? `${dayPath(date)}: ${day.error}` : undefined}
                     onFocus={() => setFocus({ row: HEADER_ROW, col })}
                     onClick={() => onOpenDay(date)}

@@ -23,6 +23,12 @@ export interface Day {
    * hand. `values` and `sources` are empty then, and writes will throw.
    */
   error: string | null;
+  /**
+   * The whole frontmatter as parsed, bookkeeping included: `date`,
+   * `_sources` and `_synced_at` as the file has them, whatever their type.
+   * For showing what is in the file. Empty if there is none or it can't be read.
+   */
+  raw: Record<string, unknown>;
 }
 
 export interface DayPatch {
@@ -233,6 +239,7 @@ export function parseDay(raw: string | null, date: string): Day {
     body: parts.body,
     notes: toNotes(parts.body),
     error,
+    raw: data,
   };
 }
 
@@ -266,7 +273,14 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
 
   const ops: YamlOp[] = [];
   // The file name says which day this is. A `date` key that disagrees is kept as the user wrote it.
-  if (!Object.prototype.hasOwnProperty.call(data, "date")) ops.push({ op: "set", path: ["date"], value: date, first: true });
+  // A file that has none is given one when it is created or when its frontmatter is changed anyway.
+  // A change to the notes alone leaves the frontmatter, or the lack of one, exactly as it is.
+  const inFrontmatter = [patch.values, patch.sources, patch.tags].some((part) => part !== undefined) || patch.syncedAt !== undefined;
+  const body = nextBody(parts.body, patch, eol);
+  const created = (raw ?? "") === "" && body !== "";
+  if (!Object.prototype.hasOwnProperty.call(data, "date") && (created || inFrontmatter)) {
+    ops.push({ op: "set", path: ["date"], value: date, first: true });
+  }
 
   for (const [key, value] of Object.entries(patch.values ?? {})) {
     if (RESERVED.has(key)) continue;
@@ -293,15 +307,53 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
     throw e;
   }
 
-  const body = nextBody(parts.body, patch, eol);
+  if (parts.open === "" && yaml === "") {
+    // No frontmatter before and none to write: the file stays the plain text it was. Unless that text
+    // would now read as frontmatter itself (notes that open with a `---` line and have another further
+    // down): then the file is given its own first, so that the notes stay notes.
+    const reads = split(parts.bom + body);
+    if (reads.open === "" && !reads.nearMiss) return parts.bom + body;
+    yaml = patchYaml("", [{ op: "set", path: ["date"], value: date, first: true }], { eol });
+  }
   const open = parts.open || `---${eol}`;
   let close = parts.close || `---${eol}`;
   if (body !== "" && !close.endsWith("\n")) close += eol;
   return parts.bom + open + yaml + close + body;
 }
 
-export async function readDay(fs: DataFs, date: string): Promise<Day> {
-  return parseDay(await fs.read(dayPath(date)), date);
+/**
+ * Reads one day. It takes its turn behind any write to that day already
+ * asked for, so what it returns is never older than a change made just before.
+ */
+export function readDay(fs: DataFs, date: string): Promise<Day> {
+  const path = dayPath(date);
+  return inTurn(fs, path, async () => parseDay(await fs.read(path), date));
+}
+
+/** The notes on disk are not the notes an edit started from: someone else has changed them since. */
+export class NotesChangedError extends Error {
+  /** The day as it is on disk now. */
+  day: Day;
+
+  constructor(day: Day) {
+    super("The notes were changed outside the app");
+    this.name = "NotesChangedError";
+    this.day = day;
+  }
+}
+
+/**
+ * Writes a day's notes, but only over the notes they were written from.
+ * `from` is the text the edit started with. If the file's notes are anything
+ * else when this write's turn comes, nothing is written and it rejects with
+ * `NotesChangedError`, which carries the day as it now is: the app never
+ * writes over a body it hasn't shown.
+ */
+export function writeNotes(fs: DataFs, date: string, notes: string, from: string): Promise<Day> {
+  return writeDay(fs, date, (day) => {
+    if (day.notes !== from) throw new NotesChangedError(day);
+    return { notes };
+  });
 }
 
 /**
@@ -324,7 +376,8 @@ export function writeDay(fs: DataFs, date: string, change: DayChange): Promise<D
     const patch = typeof change === "function" ? change(parseDay(raw, date)) : change;
     if (patch === null) return parseDay(raw, date);
     const next = updateDayFile(raw, date, patch);
-    if (next !== raw) await fs.write(path, next);
+    // A patch that changes nothing writes nothing, and doesn't bring an empty file into being.
+    if (next !== (raw ?? "")) await fs.write(path, next);
     return parseDay(next, date);
   });
 }

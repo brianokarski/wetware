@@ -31,7 +31,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   letter-spacing: inherit;
   color: inherit;
@@ -553,4 +554,88 @@ select {
   width: var(--mark-dash);
   height: var(--rule-weight);
   background: var(--color-gray);
+}
+
+/* ── Day view: one day as hairline key/value tables, with its notes beside them ── */
+
+.day {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.day-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: var(--col-gutter);
+  align-items: start;
+  margin-top: var(--space-6);
+}
+
+.day .table {
+  max-width: none;
+}
+
+.day .row {
+  grid-template-columns: var(--col-label-day) minmax(0, 1fr);
+}
+
+/* A long value with nowhere to break (a URL, a hash) breaks where it must, inside its own table. */
+.day .row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Where a value came from: at the far end of its row. */
+.day-source {
+  margin-left: auto;
+}
+
+/* A check or tag habit: one box, as in the month grid, with the same marks. */
+.day-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  width: var(--day-box);
+  height: var(--day-box);
+  border: var(--rule);
+  cursor: pointer;
+}
+
+/* An empty box has no baseline to sit on a row's. This gives it one, in the middle, so it lines up with the text beside it. */
+.day-box::before {
+  content: "\200b";
+}
+
+.day-box .mark {
+  inset: var(--day-box-inset);
+  max-width: none;
+  max-height: none;
+}
+
+.day-box:hover {
+  background: var(--color-wash);
+}
+
+.day-notes {
+  display: block;
+  width: 100%;
+  min-height: var(--notes-min);
+  padding-block: var(--space-2);
+  border-top: var(--rule);
+  font-size: var(--size-notes);
+  line-height: var(--leading-notes);
+  resize: vertical;
+  user-select: text;
+  cursor: text;
+}
+
+.day-notes::placeholder {
+  color: var(--color-gray);
+}
+
+.day-notes:focus-visible {
+  outline: none;
+  background: var(--color-wash);
 }

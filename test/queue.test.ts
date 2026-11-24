@@ -1,8 +1,8 @@
 /** S8: read-modify-write helpers must not interleave on one file. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  archiveHabit, HABITS_FILE, loadHabits, memoryFs, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
-  writeDay, type DataFs,
+  archiveHabit, FILE_TIME_LIMIT_MS, FileTimeoutError, HABITS_FILE, loadHabits, loadMonth, memoryFs, NotesChangedError, readDay, saveSettings, setMorningPagesGoal, SETTINGS_FILE,
+  writeDay, writeNotes, type DataFs,
 } from "../src/data";
 import { inTurn } from "../src/data/queue";
 
@@ -133,6 +133,11 @@ describe("a change worked out from the day as it is on disk", () => {
     // One that does change it is written once.
     await writeDay(fs, "2026-11-17", { values: { mood: 5 } });
     expect(fs.writes).toBe(1);
+    // And a day with no file gets none from notes that are still empty, or from no change at all.
+    await writeDay(fs, "2026-11-18", { notes: "" });
+    await writeDay(fs, "2026-11-18", {});
+    expect(fs.writes).toBe(1);
+    expect(fs.files.has("days/2026-11-18.md")).toBe(false);
   });
 
   it("writes nothing and creates no file when the change is null", async () => {
@@ -167,6 +172,159 @@ describe("a change worked out from the day as it is on disk", () => {
     })).rejects.toThrow(/Map keys must be unique/);
     expect(fs.files.get(path)).toBe(broken);
     await expect(writeDay(fs, "2026-11-17", () => null)).resolves.toMatchObject({ date: "2026-11-17" });
+  });
+});
+
+describe("reading after a write that was asked for a moment before", () => {
+  it("a day read behind a slow write sees what it wrote", async () => {
+    const fs = slowFs({ "days/2026-11-17.md": "---\ndate: 2026-11-17\n---\n" });
+    const writing = writeDay(fs, "2026-11-17", { notes: "Typed just before leaving.\n" });
+    // Asked for at once, as the grid does when the day view closes on unsaved notes.
+    const read = await readDay(fs, "2026-11-17");
+    expect(read.notes).toBe("Typed just before leaving.\n");
+    await writing;
+    expect(fs.busiest).toBe(1);
+  });
+
+  it("a month loaded behind the making of a day file has that day in it", async () => {
+    const fs = slowFs({ "days/2026-11-16.md": "---\ndate: 2026-11-16\nmood: 4\n---\n" });
+    const making = writeDay(fs, "2026-11-09", { notes: "Rest day." });
+    const clearing = writeDay(fs, "2026-11-16", { values: { mood: null } });
+    const month = await loadMonth(fs, { year: 2026, month: 11 });
+    expect(month["2026-11-09"].notes).toBe("Rest day.");
+    expect(month["2026-11-16"].values.mood).toBeNull();
+    await Promise.all([making, clearing]);
+  });
+
+  it("a write that fails doesn't hold up the reading that follows", async () => {
+    const inner = slowFs();
+    const fs: DataFs = { ...inner, write: () => Promise.reject(new Error("No space left on device")) };
+    const failing = writeDay(fs, "2026-11-09", { notes: "Rest day." });
+    const month = await loadMonth(fs, { year: 2026, month: 11 });
+    expect(month["2026-11-09"]).toMatchObject({ notes: "", error: null });
+    await expect(failing).rejects.toThrow("No space left");
+  });
+});
+
+describe("notes written only over the notes they were written from", () => {
+  const path = "days/2026-11-10.md";
+  const file = "---\ndate: 2026-11-10\nmood: 2\n---\n\nSlept badly.\n";
+
+  it("writes when the file's notes are the ones the edit started from", async () => {
+    const fs = slowFs({ [path]: file });
+    const saved = await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", "Slept badly.\n");
+    expect(saved.notes).toBe("Slept badly.\nTyped in Wetware.\n");
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 2\n---\n\nSlept badly.\nTyped in Wetware.\n");
+    // And again from there, and on a day with no file, whose notes are empty.
+    await writeNotes(fs, "2026-11-10", "All new.\n", "Slept badly.\nTyped in Wetware.\n");
+    await writeNotes(fs, "2026-11-09", "First.", "");
+    expect(fs.files.get("days/2026-11-09.md")).toBe("---\ndate: 2026-11-09\n---\n\nFirst.");
+  });
+
+  it("writes nothing over notes that were changed in the file meanwhile, and hands back the day as it is", async () => {
+    const outside = `${file}Second line from Obsidian.\n`;
+    const fs = slowFs({ [path]: outside });
+    const refused = writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", "Slept badly.\n");
+    await expect(refused).rejects.toBeInstanceOf(NotesChangedError);
+    const error = (await refused.catch((e) => e)) as NotesChangedError;
+    expect(error.day.notes).toBe("Slept badly.\nSecond line from Obsidian.\n");
+    expect(fs.files.get(path)).toBe(outside);
+    expect(fs.writes).toBe(0);
+    // Having seen them, the edit can be written over them.
+    await writeNotes(fs, "2026-11-10", "Slept badly.\nTyped in Wetware.\n", error.day.notes);
+    expect(fs.files.get(path)).toBe(`${file}Typed in Wetware.\n`);
+  });
+
+  it("compares inside the write's turn: a change that lands just before it is seen", async () => {
+    const fs = slowFs({ [path]: file });
+    // Another write to the body is already queued when the notes save is asked for.
+    const first = writeDay(fs, "2026-11-10", { notes: "Changed by something else.\n" });
+    const second = writeNotes(fs, "2026-11-10", "Typed in Wetware.\n", "Slept badly.\n");
+    await first;
+    await expect(second).rejects.toBeInstanceOf(NotesChangedError);
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 2\n---\n\nChanged by something else.\n");
+  });
+
+  it("is not put off by a change to the frontmatter, or by how the body's line ends and leading blank line are written", async () => {
+    const fs = slowFs({ [path]: file.replace("mood: 2", "mood: 5\nadded_outside: yes") });
+    await writeNotes(fs, "2026-11-10", "New.\n", "Slept badly.\n");
+    expect(fs.files.get(path)).toBe("---\ndate: 2026-11-10\nmood: 5\nadded_outside: yes\n---\n\nNew.\n");
+    const crlf = slowFs({ [path]: "---\r\ndate: 2026-11-10\r\n---\r\n\r\nOne.\r\nTwo.\r\n" });
+    await writeNotes(crlf, "2026-11-10", "One.\nTwo.\nThree.\n", "One.\nTwo.\n");
+    expect(crlf.files.get(path)).toBe("---\r\ndate: 2026-11-10\r\n---\r\n\r\nOne.\r\nTwo.\r\nThree.\r\n");
+  });
+
+  it("takes a file that was deleted, or emptied, for a change too", async () => {
+    const gone = slowFs();
+    await expect(writeNotes(gone, "2026-11-10", "Typed.\n", "Slept badly.\n")).rejects.toBeInstanceOf(NotesChangedError);
+    expect(gone.files.size).toBe(0);
+  });
+});
+
+describe("a file operation that never comes back", () => {
+  const never = () => new Promise<never>(() => {});
+
+  it("is given up on after its time limit, with the file named, and the queue moves on", async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = {};
+      const hung = inTurn(fs, "days/2026-11-16.md", never);
+      const next = inTurn(fs, "days/2026-11-16.md", async () => "after");
+      const failed = expect(hung).rejects.toThrow("No answer from the data folder for days/2026-11-16.md after 30 seconds");
+      let done = false;
+      void next.then(() => (done = true));
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await failed;
+      await expect(hung).rejects.toBeInstanceOf(FileTimeoutError);
+      expect(await next).toBe("after");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("doesn't hold up the month, another day, or the same day once its time is up", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = memoryFs({ "days/2026-11-15.md": "---\ndate: 2026-11-15\nmood: 4\n---\n", "days/2026-11-16.md": "---\ndate: 2026-11-16\nmood: 3\n---\n" });
+      const fs: DataFs = { ...inner, write: (p, text) => (p.includes("2026-11-16") ? never() : inner.write(p, text)) };
+      const hung = writeDay(fs, "2026-11-16", { values: { mood: 5 } });
+      const failed = expect(hung).rejects.toBeInstanceOf(FileTimeoutError);
+      // Another day is not behind it.
+      await expect(writeDay(fs, "2026-11-15", { values: { mood: 1 } })).resolves.toMatchObject({ values: { mood: 1 } });
+      // The month waits for it, and no longer than the limit.
+      const month = loadMonth(fs, { year: 2026, month: 11 });
+      const read = readDay(fs, "2026-11-16");
+      await vi.advanceTimersByTimeAsync(FILE_TIME_LIMIT_MS);
+      await failed;
+      expect((await month)["2026-11-16"].values.mood).toBe(3);
+      expect((await month)["2026-11-15"].values.mood).toBe(1);
+      expect((await read).values.mood).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves an operation that does come back alone, and sets no timer loose", async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = {};
+      const quick = inTurn(fs, "a", async () => "done");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await quick).toBe("done");
+      expect(vi.getTimerCount()).toBe(0);
+      const failing = inTurn(fs, "a", async () => Promise.reject(new Error("No space left")));
+      await expect(failing).rejects.toThrow("No space left");
+      expect(vi.getTimerCount()).toBe(0);
+      // A shorter limit can be given.
+      const brief = inTurn(fs, "a", never, 50);
+      const failed = expect(brief).rejects.toThrow("after 0 seconds");
+      await vi.advanceTimersByTimeAsync(50);
+      await failed;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
