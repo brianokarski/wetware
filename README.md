@@ -36,6 +36,7 @@ npm install
 npm run tauri dev     # run the app
 npm test              # data layer tests
 (cd src-tauri && cargo test)   # shell tests
+(cd src-tauri && cargo clippy --all-targets)   # shell lints, expected clean
 npm run shots         # screenshots of the UI into .shots/, with end-to-end checks
 ```
 

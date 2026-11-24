@@ -16,6 +16,8 @@ You're building **Wetware**, a local-first macOS habit tracker. Read [`SPEC.md`]
 
 Work through SPEC §11 in order. Each milestone should leave the app runnable.
 
+**Current state:** Milestones 1–5 are built and merged into `main`. Next is **M6: dot calendar, monthly counts, and the monthly roll-up file** (SPEC §6.3, §8.3). The M1/M2 notes below are kept for context.
+
 ### Milestone 1: Skeleton (do this first)
 
 1. Scaffold Tauri 2 + React + TS + Vite at the repo root (`npm create tauri-app@latest`, React/TS template). If Rust isn't installed, install it with `rustup`. If Tauri fights you, Electron is allowed; record the decision in the README.
@@ -51,10 +53,12 @@ src-tauri/     # Rust shell: fs scope, dialog, keychain
 
 ## Working conventions
 
-- Small commits with clear messages. Open a PR per milestone; don't push directly to `main` once code exists.
+- Small commits with clear messages. Work each milestone on its own branch (`m6-dot-calendar`, …), branched from an up-to-date `main`; don't push directly to `main`.
+- **Finish a milestone by merging it.** Open a PR, and once the checks below pass, merge it into `main` (merge commit) and delete the branch. Start the next milestone from `main`. Don't stack milestone branches on each other.
+- **A milestone is done only when all of these pass on its last commit:** `npx tsc --noEmit`, `npm test`, `npm run shots`, `(cd src-tauri && cargo test)`, and `(cd src-tauri && cargo clippy --all-targets)` with no warnings. Never end a session on an unverified `WIP` commit without saying so in the PR.
 - Add unit tests for the data layer, sync normalization (intervals → day values, `no_data` logic), and roll-up generation. UI tests are optional.
 - Never commit a real data folder or an API key. Use fixtures in `test/fixtures/` with fake data.
-- If the code lives in Dropbox, mark `node_modules/` and `src-tauri/target/` as ignored so they don't sync: `xattr -w com.dropbox.ignored 1 <dir>`.
+- If the code lives in Dropbox, mark `node_modules/` and `src-tauri/target/` as ignored so they don't sync: `xattr -w com.dropbox.ignored 1 <dir>`. Note that `npm ci` deletes and recreates `node_modules/`, which can drop the flag; check it with `xattr -p com.dropbox.ignored node_modules`.
 
 ## Open questions — ask Brian, don't guess
 
