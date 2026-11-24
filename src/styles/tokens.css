@@ -11,8 +11,10 @@
   --color-ink: #000000;
   --color-paper: #ffffff;
   --color-gray: #9a9a9a; /* inactive nav, secondary text, placeholders */
-  --color-gray-light: #e4e4e4; /* future days, disabled, soft fills */
+  --color-gray-light: #e4e4e4; /* rules of days not lived yet, disabled, soft fills */
+  --color-future: #767676; /* day numbers still ahead: dimmer than ink, dark enough to read */
   --color-rule: var(--color-ink);
+  --color-wash: #f1f1f1; /* today's column, a cell under the pointer */
 
   /* ── Type: two voices ── */
   --font-grotesk: "Inter Tight", "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -52,6 +54,8 @@
   --space-24: 6rem;
 
   --page-margin: var(--space-6);
+  --gap-section: clamp(var(--space-8), 6vh, var(--space-12)); /* between the parts of a screen; tighter in a short window. The message line sits in the first of these gaps, so it holds two lines of mono at its smallest. */
+  --notice-lines: 2; /* a message longer than this is cut short on the line; its full text is in its tooltip */
   --row-pad: var(--space-1); /* vertical padding inside a ruled row */
 
   /* ── Grid ── */
@@ -62,7 +66,23 @@
   /* ── Rules ── */
   --rule-weight: 1px;
   --rule: var(--rule-weight) solid var(--color-rule);
+  --rule-faint: var(--rule-weight) solid var(--color-gray-light); /* between days; days not lived yet */
   --focus-weight: 2px;
+
+  /* ── Month grid ── */
+  --grid-col-habit: clamp(8.5rem, 15vw, 12rem); /* habit names */
+  --grid-col-count: 3.5rem; /* "14/30" */
+  --grid-row: 1.875rem; /* height of a habit row */
+  --grid-head: 2.5rem; /* height of the row of day numbers */
+  --grid-cell-pad: 0.25rem; /* room kept free beside a value in its box */
+  --size-cell-min: 0.5625rem; /* smallest a value is set; below this it is shortened instead */
+  --grid-editor: 3.5rem; /* least width of the input that opens in a box */
+  --mono-advance: 0.6; /* width of one mono character, as a share of its size */
+  --mark-inset: 0.3125rem; /* space around a mark inside its box */
+  --mark-weight: 1.5px; /* stroke of the ✕ */
+  --mark-tag: 0.4375rem; /* the tag marker, a small solid square */
+  --mark-dash: 0.5rem; /* the "no data" dash */
+  --mark-notes: 0.1875rem; /* the dot under a day that has notes */
 
   /* ── Shape: none. Kept as tokens so the "no" is explicit. ── */
   --radius: 0;

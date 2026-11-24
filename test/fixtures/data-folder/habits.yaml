@@ -1,0 +1,134 @@
+# Fixture: made-up data for tests and screenshots.
+habits:
+  - id: weight
+    name: Weight
+    type: number
+    unit: lb
+    goal: null
+    direction: neutral
+    source: manual
+    source_rule: null
+    color: "#111111"
+    show_on_calendar: false
+    order: 1
+    archived: false
+  - id: run
+    name: Run
+    type: check
+    unit: null
+    goal: null
+    direction: higher
+    source: intervals
+    source_rule:
+      activity_types:
+        - Run
+      min_minutes: 0
+    color: "#3A7D44"
+    show_on_calendar: true
+    order: 2
+    archived: false
+  - id: lift
+    name: Lift
+    type: check
+    unit: null
+    goal: null
+    direction: higher
+    source: intervals
+    source_rule:
+      activity_types: []
+      min_minutes: 0
+    color: "#C2452D"
+    show_on_calendar: true
+    order: 3
+    archived: false
+  - id: climb
+    name: Climb
+    type: check
+    unit: null
+    goal: null
+    direction: higher
+    source: intervals
+    source_rule:
+      activity_types: []
+      min_minutes: 0
+    color: "#2F5FA8"
+    show_on_calendar: true
+    order: 4
+    archived: false
+  - id: sleep
+    name: Sleep
+    type: number
+    unit: h
+    goal: null
+    direction: higher
+    source: intervals
+    source_rule:
+      wellness_field: sleepSecs
+    color: "#111111"
+    show_on_calendar: false
+    order: 5
+    archived: false
+  - id: morning_pages
+    name: Morning pages
+    type: progress
+    unit: words
+    goal: 750
+    direction: higher
+    source: morning_pages
+    source_rule: null
+    color: "#D9A21B"
+    show_on_calendar: true
+    order: 6
+    archived: false
+  - id: meditate
+    name: Meditate
+    type: check
+    unit: null
+    goal: null
+    direction: higher
+    source: manual
+    source_rule: null
+    color: "#7A4FA3"
+    show_on_calendar: true
+    order: 7
+    archived: false
+  - id: brain_fog
+    name: Brain fog
+    type: scale
+    unit: null
+    goal: null
+    direction: lower
+    source: manual
+    source_rule: null
+    color: "#111111"
+    show_on_calendar: false
+    order: 8
+    archived: false
+  - id: mood
+    name: Mood
+    type: scale
+    unit: null
+    goal: null
+    direction: higher
+    source: manual
+    source_rule: null
+    color: "#111111"
+    show_on_calendar: false
+    order: 9
+    archived: false
+  # Two added by hand, so the grid shows all six habit types.
+  - id: stretch
+    name: Stretch
+    type: duration
+    unit: min
+    order: 10
+  - id: travel
+    name: Travel
+    type: tag
+    order: 11
+  # Archived: hidden from the grid, data kept.
+  - id: floss
+    name: Floss
+    type: check
+    order: 12
+    archived: true

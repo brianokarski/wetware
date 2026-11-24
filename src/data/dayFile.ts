@@ -1,3 +1,4 @@
+import { STRUCTURE_KEYS, TAGS_KEY, TAIL_KEYS } from "./dayKeys";
 import type { DataFs } from "./fs";
 import { inTurn } from "./queue";
 import { detectEol, isDict, patchYaml, readYaml, YamlPatchError, type Eol, type YamlOp } from "./yamlPatch";
@@ -30,6 +31,11 @@ export interface DayPatch {
   sources?: Record<string, string | undefined>;
   syncedAt?: string;
   /**
+   * Tags to add to or take out of the `tags` list. The other tags, and how
+   * the list is written, are left as they are. Use this or `values.tags`.
+   */
+  tags?: { add?: string[]; remove?: string[] };
+  /**
    * Raw body. Leave out to keep the body untouched. Writing back the `body`
    * that was read changes nothing; a different one gets a blank line between
    * it and the frontmatter if it doesn't start with one.
@@ -52,12 +58,14 @@ const OPEN = /^---[ \t]*\r?\n/;
 const CLOSE = /---[ \t]*(?:\r?\n|$)/y;
 /** A line that was probably meant to open frontmatter: `---`, or `---yaml`. */
 const NEAR_OPEN = /^---\w*[ \t]*$/;
-const RESERVED = new Set(["date", "_sources", "_synced_at"]);
-/** Keys the app keeps at the end of the frontmatter. */
-const TAIL = ["_sources", "_synced_at"];
+const RESERVED = new Set<string>(STRUCTURE_KEYS);
+const TAIL: readonly string[] = TAIL_KEYS;
+
+/** The folder of day files inside the data folder. */
+export const DAYS_DIR = "days";
 
 export function dayPath(date: string): string {
-  return `days/${date}.md`;
+  return `${DAYS_DIR}/${date}.md`;
 }
 
 interface Parts {
@@ -150,6 +158,54 @@ function inspect(raw: string): Inspected {
   return { parts, data, error: null };
 }
 
+/**
+ * The tags on a day, from the `tags` value of its frontmatter. A list is read
+ * as it is; a single word (`tags: travel`) is one tag.
+ */
+export function tagList(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : [value];
+  return items
+    .filter((item) => typeof item === "string" || typeof item === "number")
+    .map((item) => String(item).trim())
+    .filter((tag) => tag !== "");
+}
+
+/**
+ * Operations that add and remove tags, touching only those items of the list.
+ * A list the app writes itself is `tags: [..]`, as SPEC §6.2 shows it, and
+ * stays that way down to `tags: []`; a list written out over lines by hand
+ * stays as it is until its last item goes.
+ */
+function tagOps(current: unknown, { add = [], remove = [] }: NonNullable<DayPatch["tags"]>): YamlOp[] {
+  // A map isn't a list of tags that got mangled; it is something else the user keeps there.
+  if (isDict(current)) throw new DayFileError("tags has to be a list, like tags: [travel], before a tag can be changed.");
+  const gone = (item: unknown) => tagList(item).some((tag) => remove.includes(tag));
+  const before = tagList(current);
+  const after = before.filter((tag) => !remove.includes(tag));
+  for (const tag of add) if (!after.includes(tag)) after.push(tag);
+  const whole: YamlOp[] = [{ op: "set", path: [TAGS_KEY], value: after, before: TAIL, flow: true }];
+
+  if (!Array.isArray(current)) {
+    // No list yet, or a single word: write the list. Nothing to write if no tag changes.
+    const same = after.length === before.length && after.every((tag, i) => tag === before[i]);
+    return same ? [] : whole;
+  }
+  if (after.length === 0) return current.length === 0 ? [] : whole;
+
+  const ops: YamlOp[] = [];
+  // Last first, so taking one out doesn't move the ones still to go.
+  for (let i = current.length - 1; i >= 0; i--) {
+    if (gone(current[i])) ops.push({ op: "delete", path: [TAGS_KEY, i] });
+  }
+  const kept = tagList(current.filter((item) => !gone(item)));
+  for (const tag of add) {
+    if (kept.includes(tag)) continue;
+    kept.push(tag);
+    ops.push({ op: "append", path: [TAGS_KEY], value: tag, flow: true });
+  }
+  return ops;
+}
+
 /** Plain assignment, except that a key called `__proto__` is stored like any other. */
 function put<T>(record: Record<string, T>, key: string, value: T): void {
   Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true });
@@ -216,6 +272,10 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
     if (RESERVED.has(key)) continue;
     if (value === undefined) ops.push({ op: "delete", path: [key] });
     else ops.push({ op: "set", path: [key], value, before: TAIL });
+  }
+  if (patch.tags) {
+    if (patch.values && TAGS_KEY in patch.values) throw new TypeError("Patch a day's tags or values.tags, not both");
+    ops.push(...tagOps(data[TAGS_KEY], patch.tags));
   }
   for (const [key, source] of Object.entries(patch.sources ?? {})) {
     if (source === undefined) ops.push({ op: "delete", path: ["_sources", key] });

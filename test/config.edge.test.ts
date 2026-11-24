@@ -218,6 +218,69 @@ describe("N3: habit fields are normalised on read", () => {
   });
 });
 
+describe("M2 review SF-4: a habit's day key has to be its own", () => {
+  it.each([
+    ["date", "id: date", /under date, a key the app keeps/],
+    ["_sources", "id: _sources\n    type: number", /under _sources, a key the app keeps/],
+    ["_synced_at", "id: _synced_at", /under _synced_at, a key the app keeps/],
+    ["tags", "id: tags", /under tags, a key the app keeps/],
+    ["a key made of id and unit", "id: _synced\n    type: number\n    unit: at", /under _synced_at, a key the app keeps/],
+    ["another habit's key", "id: sleep_h\n    name: Nap", /under sleep_h, the same key as Sleep/],
+    ["another habit's key through its unit", "id: run\n    type: number\n    unit: \"\"", /repeats an id/],
+  ])("skips, with a reason, a habit that would use %s", (_name, entry, reason) => {
+    const { habits, skipped } = parseHabitsFile(
+      `habits:\n  - id: run\n  - id: sleep\n    name: Sleep\n    type: number\n    unit: h\n  - ${entry}\n  - id: mood\n    type: scale\n`,
+    );
+    expect(habits.map((h) => h.id)).toEqual(["run", "sleep", "mood"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].index).toBe(2);
+    expect(skipped[0].reason).toMatch(reason);
+  });
+
+  it("the earlier habit keeps a shared key, whichever way round they are", () => {
+    const { habits, skipped } = parseHabitsFile("habits:\n  - id: sleep_h\n    name: Nap\n  - id: sleep\n    name: Sleep\n    type: number\n    unit: h\n");
+    expect(habits.map((h) => h.id)).toEqual(["sleep_h"]);
+    expect(skipped).toEqual([{ index: 1, id: "sleep", reason: "would store its values under sleep_h, the same key as Nap" }]);
+  });
+
+  it("a tag habit may be called anything: it lives in the tags list and never writes to its key", () => {
+    const { habits, skipped } = parseHabitsFile(
+      "habits:\n  - id: sleep\n    type: number\n    unit: h\n  - id: tags\n    type: tag\n  - id: date\n    type: tag\n  - id: sleep_h\n    type: tag\n",
+    );
+    expect(skipped).toEqual([]);
+    expect(habits.map((h) => h.id)).toEqual(["sleep", "tags", "date", "sleep_h"]);
+    // And a tag habit's id doesn't take a key away from a habit that needs it.
+    expect(parseHabitsFile("habits:\n  - id: sleep_h\n    type: tag\n  - id: sleep\n    type: number\n    unit: h\n").skipped).toEqual([]);
+  });
+
+  it("refuses to add or change a habit into a key that is taken, writing nothing", async () => {
+    const raw = "habits:\n  - id: sleep\n    name: Sleep\n    type: number\n    unit: h\n  - id: nap\n    type: number\n    unit: min\n";
+    const fs = habitsFs(raw);
+    await expect(addHabit(fs, { id: "tags" })).rejects.toThrow(/a key the app keeps for itself/);
+    await expect(addHabit(fs, { id: "date", type: "scale" })).rejects.toThrow(HabitsError);
+    await expect(addHabit(fs, { id: "sleep_h" })).rejects.toThrow(/the same key as Sleep/);
+    await expect(addHabit(fs, { id: "sleep", type: "tag" })).rejects.toThrow(/already a habit with the id/);
+    await expect(updateHabit(fs, "sleep", { unit: "h" })).resolves.toHaveLength(2);
+    await expect(saveHabits(fs, [
+      { ...SEED_HABITS[6], id: "calm", name: "Calm", unit: "min", type: "duration" },
+      { ...SEED_HABITS[6], id: "calm_min", name: "Calm again" },
+    ])).rejects.toThrow(/the same key as Calm/);
+    expect(habitsText(fs)).toBe(raw);
+
+    // Changing a unit so that the key lands on another habit's is refused too.
+    const two = habitsFs("habits:\n  - id: a_b\n    name: First\n  - id: a\n    type: number\n    unit: c\n");
+    await expect(updateHabit(two, "a", { unit: "b" })).rejects.toThrow(/the same key as First/);
+    expect(habitsText(two)).toContain("unit: c");
+    // A tag habit can be added under any name.
+    await addHabit(fs, { id: "tags", type: "tag" });
+    expect(habitsText(fs)).toBe(raw + "  - id: tags\n    type: tag\n");
+  });
+
+  it("the seed habits and the fixture's habits have keys of their own", async () => {
+    expect(parseHabitsFile(serializeHabits(SEED_HABITS)).skipped).toEqual([]);
+  });
+});
+
 describe("S6: parseSettings checks every field", () => {
   const defaults = { location: { name: "", latitude: null, longitude: null }, units: { weight: "lb", temperature: "F" } };
 

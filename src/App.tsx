@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Mono } from "./components/primitives";
 import {
-  HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, saveSettings, setMorningPagesGoal,
-  type Habit, type Settings as SettingsData, type SkippedHabit,
+  currentNotice, HABITS_FILE, loadHabitsFile, loadSettings, morningPagesGoal, reason, saveSettings, setMorningPagesGoal,
+  SETTINGS_FILE, weekdayName, withNotice, withoutNotices,
+  type Habit, type Notice, type Settings as SettingsData, type SkippedHabit,
 } from "./data";
+import { useToday } from "./platform/clock";
 import {
   chooseDataRoot, getDataRoot, suggestedDataRoot, tauriFs, adoptSuggestedDataRoot,
 } from "./platform/tauri";
-import { Home } from "./screens/Home";
+import { Grid } from "./screens/Grid";
 import { Settings } from "./screens/Settings";
 
 type Screen = "month" | "settings";
@@ -21,36 +23,43 @@ const NAV: { id: Screen | null; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
+/** One line for the habits in habits.yaml that couldn't be used. They stay in the file as they are. */
+function skippedNotice(skipped: SkippedHabit[]): string {
+  const each = skipped.map((entry) => `Habit ${entry.index + 1}${entry.id === null ? "" : ` (${entry.id})`} ${entry.reason}.`);
+  const count = skipped.length === 1 ? "1 habit is" : `${skipped.length} habits are`;
+  return `${HABITS_FILE}: ${count} not shown. ${each.join(" ")}`;
+}
+
 export default function App() {
   const [ready, setReady] = useState(false);
   const [screen, setScreen] = useState<Screen>("month");
   const [dataRoot, setRoot] = useState<string | null>(null);
   const [suggestedRoot, setSuggestedRoot] = useState("");
   const [habits, setHabits] = useState<Habit[]>([]);
-  const [skipped, setSkipped] = useState<SkippedHabit[]>([]);
   const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const today = new Date();
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const today = useToday();
 
-  const fail = (e: unknown) => setError(String(e));
-  /** Takes a result and clears the error line: whatever went wrong before, this worked. */
-  const done = <T,>(take: (value: T) => void) => (value: T) => {
-    take(value);
-    setError(null);
-  };
+  /** Puts a notice on the message line. It stays until `settle` is called with its key, or it is dismissed. */
+  const notify = useCallback((key: string, text: string) => setNotices((list) => withNotice(list, key, text)), []);
+  /** Takes notices off the line: what they were about has gone right. */
+  const settle = useCallback((...keys: string[]) => setNotices((list) => withoutNotices(list, keys)), []);
 
   /** Read (and on first use, seed) the data folder. */
   const loadFolder = useCallback(async () => {
     // If this folder fails to load, nothing from the one open before may stay on screen under its path.
     setHabits([]);
-    setSkipped([]);
     setSettings(null);
-    const file = await loadHabitsFile(tauriFs);
+    settle("habits");
+    const named = (file: string) => (e: unknown) => {
+      throw new Error(`${file} could not be loaded. ${reason(e)}`);
+    };
+    const file = await loadHabitsFile(tauriFs).catch(named(HABITS_FILE));
     setHabits(file.habits);
-    setSkipped(file.skipped);
-    setSettings(await loadSettings(tauriFs));
-    setError(null);
-  }, []);
+    if (file.skipped.length > 0) notify("habits", skippedNotice(file.skipped));
+    setSettings(await loadSettings(tauriFs).catch(named(SETTINGS_FILE)));
+    settle("folder");
+  }, [notify, settle]);
 
   useEffect(() => {
     (async () => {
@@ -60,9 +69,9 @@ export default function App() {
       if (root) await loadFolder();
       else setScreen("settings");
     })()
-      .catch(fail)
+      .catch((e) => notify("folder", reason(e)))
       .finally(() => setReady(true));
-  }, [loadFolder]);
+  }, [loadFolder, notify]);
 
   /** The shell has already switched folders by the time it reports the path. Null: cancelled. */
   const openFolder = async (path: string | null) => {
@@ -71,36 +80,63 @@ export default function App() {
     await loadFolder();
   };
 
+  /** For a promise's catch: puts what went wrong on the message line, under `key`. */
+  const failed = (key: string, what = "") => (e: unknown) => notify(key, `${what} ${reason(e)}`.trim());
+  /** For a promise's then: takes the result, and settles any earlier failure of the same thing. */
+  const saved = <T,>(key: string, take: (value: T) => void) => (value: T) => {
+    take(value);
+    settle(key);
+  };
+
+  /** The day panel arrives in Milestone 4. Until then a day header has nothing to open. */
+  const openDay = useCallback((_date: string) => {}, []);
+
   if (!ready) return null;
+  const notice = currentNotice(notices);
 
   return (
     <div className="app">
       <header className="meta-row">
         <Mono>Wetware</Mono>
-        <Mono>{today.toLocaleDateString("en-US", { weekday: "long" })}</Mono>
-        <Mono>{today.toLocaleDateString("en-CA")}</Mono>
+        <Mono>{weekdayName(today)}</Mono>
+        <Mono>{today}</Mono>
         <Mono muted>{dataRoot ? "Local files" : "No data folder"}</Mono>
       </header>
 
+      {/* The message line. It has a place of its own in the gap under the header, so nothing below moves when a message comes or goes. */}
+      <div className="notices">
+        <p className="notice mono" role="alert" title={notice?.text}>
+          {notice?.text}
+        </p>
+        {notice && (
+          <button type="button" className="notice-dismiss choice mono" onClick={() => settle(notice.key)}>
+            Dismiss{notices.length > 1 ? ` (1 of ${notices.length})` : ""}
+          </button>
+        )}
+      </div>
+
       <main className="app-main">
-        {error && <Mono>{error}</Mono>}
-        {skipped.map((entry) => (
-          <Mono key={entry.index}>
-            {HABITS_FILE}: habit {entry.index + 1}
-            {entry.id === null ? "" : ` (${entry.id})`} is not shown: {entry.reason}.
-          </Mono>
-        ))}
-        {screen === "month" && dataRoot && <Home habits={habits} today={today} />}
+        {screen === "month" && dataRoot && (
+          <Grid
+            key={dataRoot}
+            fs={tauriFs}
+            habits={habits}
+            today={today}
+            onOpenDay={openDay}
+            notify={notify}
+            settle={settle}
+          />
+        )}
         {screen === "settings" && (
           <Settings
             dataRoot={dataRoot}
             suggestedRoot={suggestedRoot}
             settings={dataRoot ? settings : null}
             pagesGoal={morningPagesGoal(habits)}
-            onChooseFolder={() => chooseDataRoot().then(openFolder).catch(fail)}
-            onUseSuggested={() => adoptSuggestedDataRoot().then(openFolder).catch(fail)}
-            onSave={(patch) => saveSettings(tauriFs, patch).then(done(setSettings)).catch(fail)}
-            onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(done(setHabits)).catch(fail)}
+            onChooseFolder={() => chooseDataRoot().then(openFolder).catch(failed("folder"))}
+            onUseSuggested={() => adoptSuggestedDataRoot().then(openFolder).catch(failed("folder"))}
+            onSave={(patch) => saveSettings(tauriFs, patch).then(saved("settings", setSettings)).catch(failed("settings", "Settings were not saved."))}
+            onPagesGoal={(goal) => setMorningPagesGoal(tauriFs, goal).then(saved("goal", setHabits)).catch(failed("goal", "The word goal was not saved."))}
           />
         )}
       </main>

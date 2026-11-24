@@ -230,6 +230,26 @@ describe("lists", () => {
   });
 });
 
+describe("writing a new list or map in flow style", () => {
+  it("writes a new key's value between brackets when asked", () => {
+    expect(patchYaml("a: 1\n_sources:\n  a: x\n", [set(["tags"], ["travel"], { flow: true, before: ["_sources"] })]))
+      .toBe("a: 1\ntags: [travel]\n_sources:\n  a: x\n");
+    expect(patchYaml("a: 1\n", [set(["m"], { x: 1, y: [1, 2] }, { flow: true })])).toBe("a: 1\nm: {x: 1, y: [1, 2]}\n");
+    expect(patchYaml("", [{ op: "append", path: ["tags"], value: "travel", flow: true }])).toBe("tags: [travel]\n");
+  });
+
+  it("replaces an empty or plain value the same way", () => {
+    expect(patchYaml("tags: # why\nz: 1\n", [set(["tags"], ["travel"], { flow: true })])).toBe("tags: [travel] # why\nz: 1\n");
+    expect(patchYaml("tags: sick # why\n", [set(["tags"], ["sick", "travel"], { flow: true })])).toBe("tags: [sick, travel] # why\n");
+    expect(patchYaml("tags:\nz: 1\n", [{ op: "append", path: ["tags"], value: "travel", flow: true }])).toBe("tags: [travel]\nz: 1\n");
+  });
+
+  it("puts a list it has to create before the named siblings", () => {
+    expect(patchYaml("a: 1\n_sources:\n  a: x\n", [{ op: "append", path: ["tags"], value: "travel", before: ["_sources"] }]))
+      .toBe("a: 1\ntags:\n  - travel\n_sources:\n  a: x\n");
+  });
+});
+
 describe("line endings", () => {
   it("uses CRLF for inserted lines in a CRLF file", () => {
     const src = "date: 2026-11-17\r\n# c\r\nmood: 2\r\n";
@@ -289,6 +309,12 @@ describe("review N-1: a comment beside a list or map value stays", () => {
     expect(patchYaml("note: short # c\n", [set(["note"], "two\nlines")])).toBe("note: |- # c\n  two\n  lines\n");
     expect(patchYaml("_sources:   # where from\nz: 1\n", [set(["_sources", "mood"], "manual")]))
       .toBe("_sources:   # where from\n  mood: manual\nz: 1\n");
+  });
+
+  it("when a value written over lines is replaced, the comment beside its key stays", () => {
+    expect(patchYaml("tags: # why\n  - travel\n  - sick\nz: 1\n", [set(["tags"], [], { flow: true })])).toBe("tags: [] # why\nz: 1\n");
+    expect(patchYaml("m: # about m\n  a: 1\nz: 1\n", [set(["m"], 5)])).toBe("m: 5 # about m\nz: 1\n");
+    expect(patchYaml("m: # about m\n  a: 1\nz: 1\n", [set(["m"], { b: 2 })])).toBe("m: # about m\n  b: 2\nz: 1\n");
   });
 
   it("when a value inside it changes", () => {

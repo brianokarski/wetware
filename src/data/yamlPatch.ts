@@ -42,11 +42,20 @@ export type YamlOp =
       before?: readonly string[];
       /** Put a new entry ahead of its siblings. */
       first?: boolean;
+      /** Write a map or list value that has to be written from scratch as `{…}` or `[…]`. */
+      flow?: boolean;
     }
   /** Removes the entry. A path that doesn't exist is left alone. */
   | { op: "delete"; path: YamlPath }
   /** Adds an item to the end of the list at `path`, creating the list if needed. */
-  | { op: "append"; path: YamlPath; value: unknown };
+  | {
+      op: "append";
+      path: YamlPath;
+      value: unknown;
+      /** As for `set`, if the list has to be created. */
+      before?: readonly string[];
+      flow?: boolean;
+    };
 
 export type Eol = "\n" | "\r\n";
 
@@ -488,11 +497,11 @@ function insertLines(text: string, at: number, block: string, eol: Eol): string 
  * outside the entry. A comment on the value's own line is kept if the result
  * still parses with it there; a `{…}` or `[…]` value stays in that style.
  */
-function* rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol): Generator<string> {
+function* rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol, flow = false): Generator<string> {
   if (entry.marker === null || entry.parent.flow) return;
   const old = entry.value;
   const asPair = isMap(entry.parent);
-  const lines = renderLines(asPair ? "k" : null, value, isFlow(old));
+  const lines = renderLines(asPair ? "k" : null, value, flow || isFlow(old));
   // Drop the stand-in key (or the dash): the original stays in the file.
   lines[0] = lines[0].slice(asPair ? 2 : 1);
   const end = entryEnd(text, entry);
@@ -502,8 +511,9 @@ function* rewriteEntry(text: string, entry: Entry, value: unknown, eol: Eol): Ge
     return splice(text, entry.marker!, end, indentLines(withTail, column(text, entry.start), eol, true) + breakAfter);
   };
 
-  if (old?.range && !isBlock(old) && !(isScalar(old) && isBlockScalar(old))) {
-    const valueEnd = isBlank(old) ? entry.marker : Math.max(old.range[1], entry.marker);
+  if (old?.range && !(isScalar(old) && isBlockScalar(old))) {
+    // For a value that starts on the next line, the comment to keep is the one beside the key.
+    const valueEnd = isBlank(old) || isBlock(old) ? entry.marker : Math.max(old.range[1], entry.marker);
     const tail = text.slice(valueEnd, lineEnd(text, valueEnd)).replace(/\r?\n$/, "");
     if (/^[ \t]+#/.test(tail)) yield write(tail);
   }
@@ -515,7 +525,7 @@ const isBlockScalar = (node: Scalar) => node.type === "BLOCK_LITERAL" || node.ty
 /** Index of the sibling a new key goes in front of, or the number of siblings if it goes last. */
 function insertIndex(op: YamlOp, parent: YAMLMap): number {
   if (op.op === "set" && op.first) return 0;
-  if (op.op === "set" && op.before) {
+  if (op.op !== "delete" && op.before) {
     const before = op.before;
     const i = parent.items.findIndex((p) => isScalar(p.key) && before.includes(String(p.key.value)));
     if (i >= 0) return i;
@@ -548,6 +558,7 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
   const found = locate(doc, path);
   const target = found.length === path.length ? found[found.length - 1] : null;
   const at = (depth: number) => valueAt(model, path.slice(0, depth + 1));
+  const flow = op.op !== "delete" && op.flow === true;
 
   if (op.op === "delete") {
     // The model said this exists, so `target` is set unless it came through an alias or merge.
@@ -583,7 +594,7 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
       if (siblings) {
         const index = insertIndex(op, parent);
         const first = siblings[0];
-        const block = indentLines(renderLines(key, value, false), column(text, first.start), eol);
+        const block = indentLines(renderLines(key, value, flow), column(text, first.start), eol);
         if (index > 0) yield insertLines(text, entryEnd(text, siblings[index - 1]), block, eol);
         else if (ownsLine(text, first)) yield insertLines(text, lineStart(text, first.start), block, eol);
         else yield insertLines(text, entryEnd(text, siblings[siblings.length - 1]), block, eol);
@@ -598,7 +609,7 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
       }
     } else if (depth === 0) {
       if (typeof key === "string" && isEmptyDocument(doc)) {
-        yield insertLines(text, text.length, renderLines(key, value, false).join(eol), eol);
+        yield insertLines(text, text.length, renderLines(key, value, flow).join(eol), eol);
       } else if (isCollection(parent) && parent.flow && parent.items.length === 0 && parent.range && isDict(model)) {
         // A document that is just `{}`.
         const fresh = new Document(model).toString(YAML_OUT).replace(/\n$/, "").split("\n").join(eol);
@@ -607,7 +618,7 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
     } else if (!isBlock(parent)) {
       // Empty, a plain value, or the wrong kind of flow collection: nothing to add to, so it is replaced.
       if (found[depth - 1].parent.flow) yield* replaceInFlow(text, found[depth - 1], at(depth - 1));
-      else yield* rewriteEntry(text, found[depth - 1], at(depth - 1), eol);
+      else yield* rewriteEntry(text, found[depth - 1], at(depth - 1), eol, flow);
     }
   } else if (op.op === "append") {
     const list = target.value;
@@ -623,8 +634,8 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
         const end = flowEnd(items[items.length - 1]);
         yield splice(text, end, end, `, ${item}`);
       }
-      // An empty list, `[]` included, is written out as a block list.
-      yield* rewriteEntry(text, target, at(path.length - 1), eol);
+      // An empty list, `[]` included, is written out as a block list unless flow style was asked for.
+      yield* rewriteEntry(text, target, at(path.length - 1), eol, flow);
     }
   } else if (target.parent.flow) {
     yield* replaceInFlow(text, target, plain(op.value));
@@ -642,7 +653,7 @@ function* candidates({ text, doc }: Parsed, op: YamlOp, model: unknown, eol: Eol
         yield splice(text, target.marker, target.marker, " " + replacement);
       }
     }
-    yield* rewriteEntry(text, target, at(path.length - 1), eol);
+    yield* rewriteEntry(text, target, at(path.length - 1), eol, flow);
   }
 
   // Inside `{…}` or `[…]` and not editable there: write out the entry that holds the brackets.
