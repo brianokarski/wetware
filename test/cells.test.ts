@@ -493,6 +493,13 @@ describe("showing a cell", () => {
     expect(shortNumber(1500000, 3)).toBe("1.5M");
     // Close enough to round.
     expect(shortNumber(999999, 3)).toBe("1M");
+    // A thousand thousands is a million at any width that can't hold the number itself (M3 review N-4).
+    expect(shortNumber(999999, 5)).toBe("1M");
+    expect(shortNumber(999999, 4)).toBe("1M");
+    expect(shortNumber(999999, 6)).toBe("999999");
+    expect(shortNumber(999499, 5)).toBe("999k");
+    expect(shortNumber(-999999, 5)).toBe("-1M");
+    expect(shortNumber(999999999, 5)).toBe("1B");
     expect(shortNumber(1049, 3)).toBe("1k");
     expect(shortNumber(172.4, 3)).toBe("172");
     // Far beyond anything a habit holds: still a number, not a row of zeros.

@@ -1,8 +1,8 @@
 //! intervals.icu API key, stored in the macOS Keychain and nowhere else.
 //!
 //! The key goes in from the webview but never comes back out: the UI can only
-//! ask whether one exists. Sync (Milestone 3) reads it here, on the Rust side,
-//! with `intervals_key`.
+//! ask whether one exists. Sync reads it on the Rust side, with
+//! `intervals_key`, and sends it to intervals.icu from there (`net`).
 
 use keyring::{Entry, Error};
 
@@ -16,7 +16,6 @@ fn entry() -> Result<Entry, String> {
 }
 
 /// For Rust-side callers only. Not a Tauri command on purpose.
-#[allow(dead_code)]
 pub fn intervals_key() -> Result<Option<String>, String> {
     match entry()?.get_password() {
         Ok(key) => Ok(Some(key)),

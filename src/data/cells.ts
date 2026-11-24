@@ -218,12 +218,14 @@ const ROUNDING_ALLOWED = 0.05;
 export function shortNumber(value: number, width = 4): string {
   const text = (n: number) => String(n).replace("e+", "e");
   const forms = [text(value), text(Number(value.toFixed(1))), text(Math.round(value))];
-  for (const [suffix, unit] of UNITS) {
+  UNITS.forEach(([suffix, unit], i) => {
     for (const count of [Math.round(value / unit), Number((value / unit).toFixed(1))]) {
       const close = Math.abs(count * unit - value) <= Math.abs(value) * ROUNDING_ALLOWED;
-      if (count !== 0 && close) forms.push(`${text(count)}${suffix}`);
+      // A thousand of a unit is one of the next: "1M", not "1000k".
+      const carries = Math.abs(count) >= 1000 && i < UNITS.length - 1;
+      if (count !== 0 && close && !carries) forms.push(`${text(count)}${suffix}`);
     }
-  }
+  });
   // Past the trillions the units run out: powers of ten, as JavaScript itself writes them from 1e21.
   if (Math.abs(value) >= UNITS[UNITS.length - 1][1] * 1000) {
     for (const digits of [0, 1]) {
