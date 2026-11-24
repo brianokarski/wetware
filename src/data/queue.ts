@@ -21,23 +21,38 @@ export class FileTimeoutError extends Error {
   }
 }
 
+/** What a queued task can ask about its own turn. */
+export interface Turn {
+  /**
+   * False once the task has been given up on. From then on its caller has
+   * been told it failed, and later tasks are running: it must start no new
+   * write, and must not report what it did as the latest thing known.
+   */
+  live(): boolean;
+}
+
 /**
  * Runs `task` once every task queued before it for the same file has
  * finished. If it takes longer than `limitMs` it is given up on: the caller
  * is told (`FileTimeoutError`) and the queue moves on. A task given up on
- * can't be called back, so if the shell does answer in the end, what it
- * wrote may land after a later write: the limit is long so that this only
- * happens to a call that was never going to return.
+ * can't be called back. A write it had already asked the shell for may
+ * still land; the shell keeps writes to one file in the order they were
+ * asked for, so it lands before any later one and never over it. What the
+ * task itself does after that point is for it to hold back: see `Turn`.
  */
-export function inTurn<T>(fs: object, path: string, task: () => Promise<T>, limitMs = FILE_TIME_LIMIT_MS): Promise<T> {
+export function inTurn<T>(fs: object, path: string, task: (turn: Turn) => Promise<T>, limitMs = FILE_TIME_LIMIT_MS): Promise<T> {
   let paths = queues.get(fs);
   if (!paths) queues.set(fs, (paths = new Map()));
   const waiting = paths;
 
   const bounded = () =>
     new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new FileTimeoutError(path, limitMs)), limitMs);
-      task().then(resolve, reject).finally(() => clearTimeout(timer));
+      let live = true;
+      const timer = setTimeout(() => {
+        live = false;
+        reject(new FileTimeoutError(path, limitMs));
+      }, limitMs);
+      task({ live: () => live }).then(resolve, reject).finally(() => clearTimeout(timer));
     });
   const result = (waiting.get(path) ?? Promise.resolve()).then(bounded);
   // The next task runs whether or not this one failed.
@@ -60,4 +75,18 @@ export function inTurn<T>(fs: object, path: string, task: () => Promise<T>, limi
 export function settled(fs: object): Promise<void> {
   const waiting = queues.get(fs);
   return waiting ? Promise.all([...waiting.values()]).then(() => undefined) : Promise.resolve();
+}
+
+/**
+ * Resolves once nothing is queued for this `fs` and nothing more is being
+ * queued by what just finished: a save that writes one file and then
+ * another has had both land. For the moment before the app closes.
+ */
+export async function drained(fs: object): Promise<void> {
+  for (;;) {
+    await settled(fs);
+    // Whatever the tasks that just finished go on to queue is queued by now.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if ((queues.get(fs)?.size ?? 0) === 0) return;
+  }
 }

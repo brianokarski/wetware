@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { FolderChangedError, type DataFs } from "../data";
 import { asProblem, SyncFailure, type SyncSources } from "../sync";
 
@@ -32,10 +33,30 @@ export function folderFs(folder: number): DataFs {
       read: (path) => guarded(invoke<string | null>("data_read", { folder, path })),
       write: (path, contents) => guarded(invoke<void>("data_write", { folder, path, contents })),
       list: (dir) => guarded(invoke<string[]>("data_list", { folder, dir })),
+      remove: (path, expected) => guarded(invoke<void>("data_remove", { folder, path, expected })),
     };
     opened.set(folder, fs);
   }
   return fs;
+}
+
+/**
+ * The shell holds a window that is asked to close, and an app that is asked
+ * to quit, until what is typed has been saved. It asks here, and waits a
+ * short while for the answer: `flush` saves everything that is waiting to
+ * be saved and resolves when it is on disk, and the shell is then told it
+ * may close. If `flush` fails the shell is told all the same: quitting is
+ * never held up by a save that can't be made. Returns a function that stops
+ * listening.
+ */
+export function onFlushAsked(flush: () => Promise<void>): () => void {
+  const listening = listen("flush-asked", () => {
+    void flush()
+      .catch(() => {})
+      .then(() => invoke<void>("flush_done"))
+      .catch(() => {});
+  });
+  return () => void listening.then((stop) => stop()).catch(() => {});
 }
 
 /** The folder now open, or null if none has been chosen yet. */

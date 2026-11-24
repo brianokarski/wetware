@@ -43,6 +43,25 @@ function changed(before, after) {
   return { added: b.filter((l) => !a.includes(l)), removed: a.filter((l) => !b.includes(l)) };
 }
 
+/** The paths whose text differs between two readings of the folder (`t.folder()`), with those added and those gone. */
+function folderDiff(before, after) {
+  const [a, b] = [new Map(before), new Map(after)];
+  return [...new Set([...a.keys(), ...b.keys()])].filter((path) => a.get(path) !== b.get(path)).sort();
+}
+
+/** `count` words of made-up prose, in sentences and paragraphs. Exactly `count`: nothing else in it is a word. */
+function prose(count) {
+  const sentence = "the kettle took its time this morning and so did I there is a kind of quiet in the flat before the street wakes".split(" ");
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    let word = sentence[i % sentence.length];
+    if (i % 12 === 0) word = word[0].toUpperCase() + word.slice(1);
+    if (i % 12 === 11 && i !== count - 1) word += ".";
+    out.push(i > 0 && i % 84 === 0 ? `\n\n${word}` : i > 0 ? ` ${word}` : word);
+  }
+  return `${out.join("")}.`;
+}
+
 /** A PNG's pixels. Only what Chrome's screenshots use: 8 bits a channel, RGB or RGBA, not interlaced. */
 function decodePng(png) {
   let width = 0;
@@ -466,7 +485,8 @@ const scenarios = [
       await t.click("stretch", 17); // duration
       await t.page.keyboard.type("15");
       await t.page.keyboard.press("Enter");
-      await t.click("morning_pages", 17); // progress
+      // Progress. A click on the Morning pages box opens the writing room; a number typed on it is a count entered by hand.
+      await t.focusCell("morning_pages", 17);
       await t.page.keyboard.type("300");
       await t.click("weight", 17); // number; this click also saves the pages by blur
       await t.page.keyboard.type("170.5");
@@ -535,10 +555,13 @@ const scenarios = [
     async run(t) {
       const key = (name) => t.page.keyboard.press(name);
       const before = await t.file(TODAY_FILE);
-      // Sync is the first stop. Then the grid is one tab stop: past the three month buttons, in at today, and out the far side.
+      // Sync is the first stop. Then the grid is one tab stop: past the three month buttons and the way into the
+      // writing room (there while today's pages are short), in at today, and out the far side.
       await key("Tab");
       assert.equal(await t.page.evaluate(() => document.activeElement.textContent), "Sync");
       for (let i = 0; i < 4; i++) await key("Tab");
+      assert.equal(await t.page.evaluate(() => document.activeElement.textContent), "Write");
+      await key("Tab");
       assert.equal(await t.focused(), "weight 2026-11-17");
       await key("Tab");
       assert.doesNotMatch(await t.focused(), /2026-11/);
@@ -1627,7 +1650,7 @@ const scenarios = [
       await t.ready();
       assert.doesNotMatch(await t.focused(), /^day /);
       await t.page.keyboard.press("Tab");
-      for (let i = 0; i < 4; i++) await t.page.keyboard.press("Tab");
+      for (let i = 0; i < 5; i++) await t.page.keyboard.press("Tab");
       assert.equal(await t.focused(), "weight 2026-11-17");
     },
   },
@@ -2279,7 +2302,7 @@ const scenarios = [
       const key = (name) => t.page.keyboard.press(name);
       const focusedLabel = () => t.page.evaluate(() => document.activeElement.getAttribute("aria-label") ?? document.activeElement.textContent);
       // Into the grid, up to the day headers, along to the 16th, and Enter opens it.
-      for (let i = 0; i < 5; i++) await key("Tab");
+      for (let i = 0; i < 6; i++) await key("Tab");
       assert.equal(await t.focused(), "weight 2026-11-17");
       await key("ArrowUp");
       await key("ArrowLeft");
@@ -2368,6 +2391,1240 @@ const scenarios = [
     },
   },
   {
+    name: "pages",
+    about: "the writing room: bare, a few words kept in pages/ with only their count in the day file, left mid-sentence and gone back to",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const before = await t.folder();
+      const day = await t.file(TODAY_FILE);
+      const gray = (color) => {
+        const [r, g, b] = color.match(/[\d.]+/g).map(Number);
+        assert.ok(r === g && g === b, `${color} is not a gray`);
+        return r;
+      };
+
+      // The way in: a quiet line beside the month's name, while today's pages are short of the goal.
+      assert.equal(await t.text(".pages-prompt"), "Morning pages0 / 750 words todayWrite");
+      const title = await t.page.evaluate(() => {
+        const box = (selector) => {
+          const r = document.querySelector(selector).getBoundingClientRect();
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+        };
+        return { name: box(".month h1"), prompt: box(".pages-prompt"), grid: box(".grid"), width: window.innerWidth };
+      });
+      assert.ok(title.prompt.left > title.name.right && title.prompt.right <= title.width, "the line runs into the month's name or off the window");
+      assert.ok(title.prompt.top >= title.name.top && title.prompt.bottom <= title.grid.top, "the line is not on the month's name's own line");
+      // It is about today, and is on the month today is in: another month says nothing of anyone's pages.
+      await t.page.click(".month-nav button:first-child");
+      await t.ready();
+      assert.equal(await t.count(".pages-prompt"), 0);
+      await t.page.click(".month-nav button:nth-child(2)");
+      await t.ready();
+      await t.page.click(".pages-prompt .action");
+      await t.page.waitForSelector(".room-field");
+      await t.page.evaluate(() => document.fonts.ready);
+
+      // Bare: no header, no message line, no navigation, no grid. What is on screen is this and nothing else.
+      assert.equal(await t.count(".app, .nav, .nav-item, .notices, .notice, .meta-row, .grid, .month, .day"), 0);
+      const onScreen = () => t.page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim());
+      assert.equal(
+        await onScreen(),
+        "Tuesday, November 17 page 1 of 3 0 / 750 words Leave Kept in pages/2026-11-17.md and nowhere else. Only the word count goes to the day file.",
+      );
+      // One field for the whole text, with the keyboard in it. Spellcheck is on: it is prose.
+      assert.equal(await t.count(".room textarea, .room input, .room [contenteditable]"), 1);
+      assert.equal(
+        await t.page.evaluate(() => `${document.activeElement.className} ${document.activeElement.spellcheck} ${document.activeElement.placeholder}`),
+        "room-text room-field true Start anywhere.",
+      );
+      // The one thing a page can ask of the system about this field: no suggestions written for it, and nothing filled in.
+      assert.equal(await t.page.$eval(".room-field", (el) => `${el.getAttribute("writingsuggestions")} ${el.getAttribute("autocomplete")}`), "false off");
+      assert.deepEqual((await t.room()).marks, []);
+      // Softer than the rest of the app, and still no colour: gray paper, gray ink, to the edges of the window.
+      const look = await t.page.evaluate(() => {
+        const style = (selector) => getComputedStyle(document.querySelector(selector));
+        return { paper: style(".room").backgroundColor, behind: style("body").backgroundColor, ink: style(".room-field").color, quiet: style(".room-strip").color };
+      });
+      assert.ok(gray(look.paper) < 255 && gray(look.paper) > 235, `the room's paper is ${look.paper}`);
+      assert.equal(look.behind, look.paper);
+      assert.ok(gray(look.ink) > 0 && gray(look.ink) < 80, `the room's ink is ${look.ink}`);
+      assert.ok(gray(look.quiet) > gray(look.ink));
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      await t.shot("pages-empty");
+
+      // Looked at and left: nothing is written, and the keyboard is back on the box of the day's pages.
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "morning_pages 2026-11-17");
+      assert.equal(await t.page.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(255, 255, 255)");
+      assert.deepEqual(await t.folder(), before);
+      assert.equal(await t.writes(), 0);
+
+      // In again from the keyboard: Enter on that box. A few words, and a moment later they are in pages/.
+      await t.page.keyboard.press("Enter");
+      await t.page.waitForSelector(".room-field");
+      await t.page.keyboard.type("The kettle took its time.");
+      assert.equal(await t.file(PAGES), null, "saved on the keystroke");
+      await t.page.waitForFunction((path) => window.wetware.read(path) !== null, {}, PAGES);
+      await t.saved();
+      assert.equal(await t.file(PAGES), "The kettle took its time.");
+      // The day file has the count, with its source, and not a line more. Nothing else in the folder has changed.
+      assert.deepEqual(changed(day, await t.file(TODAY_FILE)), { added: ["morning_pages_words: 5", "  morning_pages_words: morning_pages"], removed: [] });
+      assert.deepEqual(folderDiff(before, await t.folder()), [TODAY_FILE, PAGES]);
+      assert.deepEqual((await t.room()).strip, ["Tuesday, November 17", "page 1 of 3", "5 / 750 words", "Leave"]);
+      assert.equal((await t.room()).said, null);
+      await t.shot();
+
+      // Escape while a character is being composed belongs to the input method: it puts the composition away, and the room stays.
+      await t.page.$eval(".room-field", (el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true })));
+      await t.saved();
+      assert.equal(await t.count(".room"), 1);
+      assert.equal(await t.count(".grid"), 0);
+
+      // Left mid-sentence, at once: nothing typed is lost, and the grid that comes back shows how far the pages have got.
+      await t.page.keyboard.type(" And so");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.saved();
+      assert.equal(await t.file(PAGES), "The kettle took its time. And so");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 7$/m);
+      assert.equal(await t.state("morning_pages", 17), "done");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 7 of 750 words");
+      assert.equal(await t.text(".pages-prompt"), "Morning pages7 / 750 words todayWrite");
+      assert.equal(await t.focused(), "morning_pages 2026-11-17");
+
+      // Gone back to with a click on the box: the same text, and the caret at its end to go on from.
+      await t.click("morning_pages", 17);
+      await t.page.waitForSelector(".room-field");
+      assert.equal((await t.room()).text, "The kettle took its time. And so");
+      assert.deepEqual(await t.page.$eval(".room-field", (el) => [el.selectionStart, el.selectionEnd]), [32, 32]);
+      await t.page.keyboard.type(" did I.");
+      // Out by the keyboard's other way: back a stop to Leave, which shows where the keyboard is, and Enter.
+      await t.page.keyboard.down("Shift");
+      await t.page.keyboard.press("Tab");
+      await t.page.keyboard.up("Shift");
+      assert.equal(await t.focusedLabel(), "Leave the writing room");
+      await checkFocusRing(t, "Leave, in the writing room", { outside: true });
+      await t.page.keyboard.press("Enter");
+      await t.ready();
+      await t.saved();
+      assert.equal(await t.file(PAGES), "The kettle took its time. And so did I.");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 9$/m);
+
+      // "Pages" in the navigation is today's pages as well.
+      await t.openPages();
+      assert.equal((await t.room()).text, "The kettle took its time. And so did I.");
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 1 of 3", "9 / 750 words"]);
+      // No timer, no streak, no score: what the room says is the date, the page, the count, and where the text is kept.
+      assert.doesNotMatch(await onScreen(), /streak|in a row|timer|minute|second|keep going|well done|congrat|goal met|🔥/i);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      // A day still to come has no pages to open.
+      await t.click("morning_pages", 18);
+      assert.equal(await t.count(".room"), 0);
+      assert.deepEqual(folderDiff(before, await t.folder()), [TODAY_FILE, PAGES]);
+    },
+  },
+  {
+    name: "pages-760",
+    about: "750 words are three pages and the habit done; ten more begin a fourth; each page is marked in the margin on the line it begins on",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const saved = (count) => t.page.waitForFunction((path, n) => (window.wetware.read(path) ?? "").split(/\s+/).filter(Boolean).length === n, {}, PAGES, count);
+      /** Where the marks are, against the field: how far down, and whether they are in the margin. */
+      const marks = () =>
+        t.page.evaluate(() => {
+          const field = document.querySelector(".room-field").getBoundingClientRect();
+          return [...document.querySelectorAll(".room-mark")].map((mark) => {
+            const r = mark.getBoundingClientRect();
+            return { page: Number(mark.textContent), top: r.top - field.top, left: r.left, right: r.right, height: r.height, gap: field.left - r.right, x: r.left, y: r.top };
+          });
+        });
+      const sizes = () =>
+        t.page.evaluate(() => {
+          const field = document.querySelector(".room-field");
+          // How tall the field's text is when the field is given no height of its own to stretch to.
+          field.style.height = "0";
+          const natural = field.scrollHeight;
+          field.style.height = "";
+          return {
+            field: field.getBoundingClientRect().height,
+            copy: document.querySelector(".room-copy").getBoundingClientRect().height,
+            inside: field.scrollHeight,
+            natural,
+            line: parseFloat(getComputedStyle(field).lineHeight),
+            sideways: document.documentElement.scrollWidth > window.innerWidth,
+            animations: document.getAnimations().length,
+          };
+        });
+
+      await t.openPages();
+      // 750 words, put in at once as a paste is.
+      await t.insert(prose(750));
+      await saved(750);
+      assert.deepEqual((await t.room()).strip, ["Tuesday, November 17", "page 3 of 3", "750 / 750 words", "Leave"]);
+      // Three pages: the first begins where the text does, and the second and third are marked where they begin.
+      assert.deepEqual((await t.room()).marks, [2, 3]);
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 750$/m);
+      // Reaching the goal changes nothing loud: nothing moves, nothing is added, nothing is said.
+      assert.equal((await sizes()).animations, 0);
+      assert.equal((await t.room()).said, null);
+      assert.equal(await t.count(".room-head *"), 7);
+      assert.equal((await t.room()).foot, "Kept in pages/2026-11-17.md and nowhere else. Only the word count goes to the day file.");
+
+      // Ten more words: the fourth page begins, and there is no "of" any more.
+      await t.insert(` ${prose(10)}`);
+      await saved(760);
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 4", "760 / 750 words"]);
+      assert.deepEqual((await t.room()).marks, [2, 3, 4]);
+      assert.equal(await t.count(".room-head *"), 7);
+
+      // The field is as tall as its text, with no scrolling of its own: the window scrolls, and never sideways.
+      const size = await sizes();
+      assert.ok(Math.abs(size.field - size.copy) < 1 && Math.abs(size.field - size.inside) < 1, `the field is ${size.field}px tall, its text ${size.inside}px, its copy ${size.copy}px`);
+      // The unseen copy the marks are measured on is set as the field's own text is: the same lines, so the same height.
+      assert.ok(Math.abs(size.natural - size.copy) < 1, `the field's text is ${size.natural}px tall by itself, the copy the marks are measured on ${size.copy}px`);
+      assert.ok(size.field > 30 * size.line, "760 words came to fewer than 30 lines");
+      assert.ok(!size.sideways, "horizontal scroll");
+      // The line being written is in the window, clear of its bottom edge, and the strip is still in sight above.
+      const view = await t.page.evaluate(() => {
+        const field = document.querySelector(".room-field").getBoundingClientRect();
+        const strip = document.querySelector(".room-strip").getBoundingClientRect();
+        return { end: field.bottom, height: window.innerHeight, strip: strip.top, scrolled: window.scrollY };
+      });
+      assert.ok(view.scrolled > 0 && view.end < view.height - 40, `the last line is at ${view.end}px of ${view.height}px`);
+      assert.ok(view.strip >= 0 && view.strip < 60, `the strip is at ${view.strip}px`);
+
+      // Each mark is in the margin, left of the text and inside the window: a number under a hairline, both drawn in gray.
+      const found = await marks();
+      for (const mark of found) {
+        assert.ok(mark.left >= 0 && mark.gap >= 8, `page ${mark.page}'s mark is at ${mark.left}px, ${mark.gap}px from the text`);
+        assert.ok(Math.abs(mark.height - size.line) < 1, `page ${mark.page}'s mark is ${mark.height}px tall, a line is ${size.line}px`);
+        // On a line of the text: a whole number of lines down.
+        assert.ok(Math.abs(mark.top / size.line - Math.round(mark.top / size.line)) < 0.08, `page ${mark.page}'s mark is ${mark.top / size.line} lines down`);
+      }
+      assert.ok(found[0].top < found[1].top && found[1].top < found[2].top);
+      await t.page.mouse.move(2, 2);
+      const px = await pixels(t.page);
+      const last = found[2];
+      assert.ok(isGray(px.darkest(last.x + 10, last.y)), `no hairline over page 4's number (${px.darkest(last.x + 10, last.y)})`);
+      assert.ok(px.darkestIn({ left: last.left, right: last.left + 12, top: last.y + 3, bottom: last.y + last.height }) < 170, "page 4's number is not drawn");
+      assert.ok(px.lightest(last.x + 10, last.y - 6) > 235, "something is drawn above the hairline");
+      await t.shot();
+
+      // One word to a line, and where a page begins can be worked out without looking at how the text wraps:
+      // the 251st, 501st and 751st lines. The marks are exactly there.
+      await t.page.$eval(".room-field", (el) => el.select());
+      await t.insert(Array.from({ length: 760 }, (_, i) => `w${i + 1}`).join("\n"));
+      await saved(760);
+      const column = await marks();
+      assert.deepEqual(column.map((mark) => mark.page), [2, 3, 4]);
+      for (const mark of column) {
+        const lines = (mark.page - 1) * 250;
+        assert.ok(Math.abs(mark.top - lines * size.line) < 1.5, `page ${mark.page} begins ${lines} lines down, at ${lines * size.line}px; its mark is at ${mark.top}px`);
+      }
+      // Blank lines at the end are part of the text, and the field is tall enough to show them.
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+      await t.insert("\n\n\n");
+      const trailing = await sizes();
+      assert.ok(Math.abs(trailing.field - trailing.inside) < 1 && Math.abs(trailing.field - trailing.copy) < 1, `with blank lines at its end the field is ${trailing.field}px tall, its text ${trailing.inside}px`);
+      assert.ok(Math.abs(trailing.field - 763 * size.line) < 2, `763 lines came to ${trailing.field / size.line} lines`);
+      for (let i = 0; i < 3; i++) await t.page.keyboard.press("Backspace");
+      // Taking words out takes the marks with them.
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.indexOf("\nw501"), el.value.length));
+      await t.page.keyboard.press("Backspace");
+      assert.deepEqual((await t.room()).marks, [2]);
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 2 of 3", "500 / 750 words"]);
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+      await t.insert(`\n${Array.from({ length: 260 }, (_, i) => `w${i + 501}`).join("\n")}`);
+      await saved(760);
+
+      // Back in the month: the box is done, with the ✕ of a goal met, it counts toward the month, and the line is gone.
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.saved();
+      assert.equal(await t.state("morning_pages", 17), "done");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 760 of 750 words, goal met");
+      assert.equal(await t.page.$eval('.grid-cell[data-habit="morning_pages"][data-date="2026-11-17"] .mark', (el) => el.className), "mark mark-x");
+      assert.equal(await t.countText("morning_pages"), "9/30");
+      assert.equal(await t.count(".pages-prompt"), 0);
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 760$/m);
+      assert.match(await t.file(TODAY_FILE), /^  morning_pages_words: morning_pages$/m);
+      // The month's name has not moved for the line going.
+      assert.equal(await t.text(".month h1"), "November");
+    },
+  },
+  {
+    name: "pages-960",
+    about: "the writing room at the minimum window size, part-way down three pages",
+    size: SMALL,
+    async run(t) {
+      await t.openPages();
+      // At this width a long message would run to three lines and more. It keeps to its two, with the way to
+      // dismiss it beside it, and the text below stays where it was.
+      const top = () => t.page.$eval(".room-field", (el) => el.getBoundingClientRect().top + window.scrollY);
+      const before = await top();
+      const long = `The folder said no (os error 5): ${"a very long reason from the operating system, ".repeat(12)}and that is all.`;
+      await t.page.evaluate((message) => window.wetware.failWrites(message), long);
+      await t.page.keyboard.type("x");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent.includes("The folder said no"));
+      assert.equal(await top(), before);
+      const said = await t.page.evaluate(() => {
+        const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const line = parseFloat(getComputedStyle(document.querySelector(".room-notice")).lineHeight);
+        return { lines: box(".room-said").height / line, dismiss: box(".room-said button").right, width: window.innerWidth, sideways: document.documentElement.scrollWidth > window.innerWidth };
+      });
+      assert.ok(Math.abs(said.lines - 2) < 0.05, `what the room says takes ${said.lines} lines`);
+      assert.ok(said.dismiss <= said.width && !said.sideways, "the message pushes its action off the window");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Backspace");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent === "");
+      assert.equal(await top(), before);
+      await t.insert(prose(760));
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-mark").length === 3);
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      // The window has gone down with the writing, to the last line.
+      await t.page.waitForFunction(() => window.scrollY > 0);
+      // Scrolled back to where the second page begins: its mark is in the window, in the margin, and the strip is still above.
+      // (The keyboard is taken out of the text first: taking the screenshot would otherwise bring the caret back into view.)
+      await t.page.evaluate(() => document.activeElement.blur());
+      await t.page.evaluate(() => window.scrollTo(0, document.querySelector('.room-mark[data-page="2"]').getBoundingClientRect().top + window.scrollY - 200));
+      const seen = await t.page.evaluate(() => {
+        const mark = document.querySelector('.room-mark[data-page="2"]').getBoundingClientRect();
+        const field = document.querySelector(".room-field").getBoundingClientRect();
+        const strip = document.querySelector(".room-strip").getBoundingClientRect();
+        const second = document.querySelector(".room-strip > :nth-child(2)").getBoundingClientRect();
+        return { mark: [mark.left, mark.right, mark.top], field: [field.left, field.right], strip: [strip.top, strip.bottom], second: second.left, width: window.innerWidth, height: window.innerHeight };
+      });
+      assert.ok(seen.mark[2] > 100 && seen.mark[2] < seen.height - 100, `the second page's mark is at ${seen.mark[2]}px of ${seen.height}px`);
+      assert.ok(seen.mark[0] >= 0 && seen.mark[1] < seen.field[0], `the mark is at ${seen.mark[0]} to ${seen.mark[1]}px; the text starts at ${seen.field[0]}px`);
+      assert.ok(seen.field[1] <= seen.width, "the text runs off the window");
+      assert.ok(seen.strip[0] >= 0 && seen.strip[1] < seen.mark[2], "the strip is not above the text");
+      // The text hangs from the strip's grid: it starts where the strip's second column does.
+      assert.ok(Math.abs(seen.field[0] - seen.second) < 1, `the text starts at ${seen.field[0]}px, the strip's second column at ${seen.second}px`);
+      await t.shot();
+    },
+  },
+  {
+    name: "pages-again",
+    about: "pages gone back to and gone on with; emptied again; and a day whose count was set by hand",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const before = await t.folder();
+      const day = await t.file(TODAY_FILE);
+      const holds = (path, text) => t.page.waitForFunction((p, body) => window.wetware.read(p) === body, {}, path, text);
+
+      // A first sitting, left by Escape.
+      await t.openPages();
+      await t.page.keyboard.type("First sitting.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await holds(PAGES, "First sitting.");
+      // A second: the text is there, the writing goes on from its end, and the window going to the back saves at once.
+      await t.openPages();
+      assert.equal((await t.room()).text, "First sitting.");
+      await t.page.keyboard.type("\nSecond sitting, after tea.");
+      await t.windowEvent("blur");
+      await t.saved();
+      assert.equal(await t.file(PAGES), "First sitting.\nSecond sitting, after tea.");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 6$/m);
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 1 of 3", "6 / 750 words"]);
+
+      // Emptied: the file is empty, and the count the room wrote is taken back out. The day file is as it was
+      // before any pages were written, byte for byte, and the day is one with no pages again.
+      await t.page.$eval(".room-field", (el) => el.select());
+      await t.page.keyboard.press("Backspace");
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 1 of 3", "0 / 750 words"]);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.saved();
+      assert.equal(await t.file(PAGES), "");
+      assert.equal(await t.file(TODAY_FILE), day);
+      assert.deepEqual(folderDiff(before, await t.folder()), [PAGES]);
+      assert.equal(await t.state("morning_pages", 17), "pending");
+      assert.equal(await t.text(".pages-prompt"), "Morning pages0 / 750 words todayWrite");
+
+      // A past day opens from its box. The fixture's 16th has a count (768) with no source on record: set by
+      // hand, as far as the app can tell. The room keeps the text and leaves that count as it is, and says so.
+      const sixteenth = await t.file("days/2026-11-16.md");
+      await t.click("morning_pages", 16);
+      await t.page.waitForSelector(".room-field");
+      await t.page.waitForFunction(() => document.querySelector(".room-foot").textContent.includes("set by hand"));
+      assert.deepEqual((await t.room()).strip, ["Monday, November 16", "page 1 of 3", "0 / 750 words", "Leave"]);
+      assert.equal((await t.room()).foot, "Kept in pages/2026-11-16.md and nowhere else. The day file's count (768) was set by hand, so the room leaves it as it is.");
+      await t.page.keyboard.type("Written late.");
+      await holds("pages/2026-11-16.md", "Written late.");
+      await t.saved();
+      assert.equal(await t.file("days/2026-11-16.md"), sixteenth);
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 1 of 3", "2 / 750 words"]);
+      await t.shot("pages-by-hand");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "morning_pages 2026-11-16");
+      assert.equal(await t.label("morning_pages", 16), "Morning pages, Monday, November 16, 2026: 768 of 750 words, goal met");
+
+      // The same for a count typed into the grid today: a number typed on the box is a count entered by hand.
+      await t.focusCell("morning_pages", 17);
+      await t.page.keyboard.type("300");
+      await t.page.keyboard.press("Enter");
+      await t.saved();
+      const typed = await t.file(TODAY_FILE);
+      assert.deepEqual(changed(day, typed), { added: ["morning_pages_words: 300", "  morning_pages_words: manual"], removed: [] });
+      await t.page.keyboard.press("Enter");
+      await t.page.waitForSelector(".room-field");
+      await t.page.keyboard.type("Four words, not 300.");
+      await holds(PAGES, "Four words, not 300.");
+      await t.saved();
+      assert.equal(await t.file(TODAY_FILE), typed);
+      assert.equal((await t.room()).foot, "Kept in pages/2026-11-17.md and nowhere else. The day file's count (300) was set by hand, so the room leaves it as it is.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 300 of 750 words");
+    },
+  },
+  {
+    name: "pages-slow",
+    about: "on a slow disk, saves asked for while one is on its way land in order, none is taken for a change made elsewhere, and the month that comes back has the last count",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const pagesWrites = () => t.page.evaluate((path) => window.wetware.writes().filter((write) => write.path === path).length, PAGES);
+      await t.page.evaluate((path) => {
+        window.wetware.slowWrite(path, 400);
+        window.wetware.slowWrite("days/2026-11-17.md", 200);
+      }, PAGES);
+      await t.openPages();
+      await t.page.keyboard.type("One.");
+      // The first save is on its way to disk, and has not landed.
+      await t.page.waitForFunction(() => window.wetware.calls().includes("data_write"));
+      assert.equal(await t.file(PAGES), null);
+      // More is typed, and the window goes to the back: a second save is asked for behind the first.
+      await t.page.keyboard.type(" Two.");
+      await t.windowEvent("blur");
+      // And more again, and out of the room at once: a third, on the way out.
+      await t.page.keyboard.type(" Three.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      // The month is not shown until every one of them has landed, count and all. Nothing was asked, nothing is said.
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 3 of 750 words");
+      assert.equal(await t.file(PAGES), "One. Two. Three.");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 3$/m);
+      assert.equal(await pagesWrites(), 3);
+      assert.equal(await t.problem(), null);
+      assert.equal(await t.text(".pages-prompt"), "Morning pages3 / 750 words todayWrite");
+
+      // A save that fails with another behind it: the one behind is not taken for a change made elsewhere.
+      await t.openPages();
+      assert.equal((await t.room()).text, "One. Two. Three.");
+      const calls = await t.page.evaluate(() => window.wetware.calls().length);
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" Four.");
+      await t.page.waitForFunction((n) => window.wetware.calls().slice(n).includes("data_write"), {}, calls);
+      await t.page.keyboard.type(" Five.");
+      await t.windowEvent("blur");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent.includes("were not saved"));
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 900)));
+      assert.equal((await t.room()).said, "The pages for November 17 were not saved. No space left on device (os error 28)");
+      assert.deepEqual((await t.room()).actions, ["Dismiss"]);
+      assert.equal(await t.file(PAGES), "One. Two. Three.");
+      // The disk has room again, and leaving saves what is there.
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.file(PAGES), "One. Two. Three. Four. Five.");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 5 of 750 words");
+      assert.equal(await t.problem(), null);
+    },
+  },
+  {
+    name: "pages-midnight",
+    about: "just after midnight, with nothing to tell the app the day has turned, the ways into the room that mean today open today",
+    async run(t) {
+      const typed = (path, text) => t.page.waitForFunction((p, body) => window.wetware.read(p) === body, {}, path, text);
+      const strip = async () => (await t.room()).strip[0];
+      // Yesterday's pages are there, short of the goal, so the line beside the month's name is too.
+      await t.page.evaluate(() => window.wetware.write("pages/2026-11-17.md", "Yesterday's pages."));
+      // Five seconds past midnight on the 18th. No focus event, no tick: the screen still says the 17th.
+      await t.page.evaluate(() => window.wetware.setDay(18, 0, 0));
+      assert.equal(await t.page.$eval(".app > .meta-row > :nth-child(3)", (el) => el.textContent), "2026-11-17");
+
+      // "Pages" in the navigation asks the clock, not the screen.
+      await t.openPages();
+      assert.equal(await strip(), "Wednesday, November 18");
+      assert.equal((await t.room()).text, "");
+      await t.page.keyboard.type("Today's.");
+      await typed("pages/2026-11-18.md", "Today's.");
+      assert.equal(await t.file("pages/2026-11-17.md"), "Yesterday's pages.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.saved();
+      assert.match(await t.file("days/2026-11-18.md"), /^morning_pages_words: 1$/m);
+      assert.doesNotMatch(await t.file(TODAY_FILE), /morning_pages_words/);
+
+      // So does "Write", on a grid that was drawn for yesterday (the clock is put back and forward to draw it so).
+      await t.page.evaluate(() => window.wetware.setDay(17, 23, 59));
+      await t.windowEvent("focus");
+      await t.page.waitForSelector(".pages-prompt");
+      await t.page.evaluate(() => window.wetware.setDay(18, 6, 30));
+      assert.equal(await t.page.$eval(".app > .meta-row > :nth-child(3)", (el) => el.textContent), "2026-11-17");
+      await t.page.click(".pages-prompt .action");
+      await t.page.waitForSelector(".room-field");
+      assert.equal(await strip(), "Wednesday, November 18");
+      assert.equal((await t.room()).text, "Today's.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      // Yesterday's box still opens yesterday's pages: it is the box of that day.
+      await t.click("morning_pages", 17);
+      await t.page.waitForSelector(".room-field");
+      assert.equal(await strip(), "Tuesday, November 17");
+      assert.equal((await t.room()).text, "Yesterday's pages.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+
+      // The page being shown again (a laptop opened, the app still in front) is enough for the screen to catch up.
+      assert.equal(await t.page.$eval(".app > .meta-row > :nth-child(3)", (el) => el.textContent), "2026-11-17");
+      await t.page.evaluate(() => void document.dispatchEvent(new Event("visibilitychange")));
+      // At once, not at the next half-minute tick.
+      await t.page.waitForFunction(() => document.querySelector(".app > .meta-row > :nth-child(3)").textContent === "2026-11-18", { timeout: 1500 });
+      assert.equal(await t.page.$eval(".grid-day[data-today] .grid-day-button", (el) => el.dataset.date), "2026-11-18");
+    },
+  },
+  {
+    name: "pages-kept",
+    about: "the room is not left with text that is not on disk: leaving waits for the save, stays and says why if it fails, and only goes without it when told to",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const STAYED = "The pages for November 17 are not saved, so the room has stayed open: leaving now would lose what is typed here. No space left on device (os error 28)";
+      const roomSays = (text) => t.page.waitForFunction((said) => document.querySelector(".room-notice").textContent === said, {}, text);
+
+      await t.openPages();
+      await t.page.keyboard.type("First part saved.");
+      await t.page.waitForFunction((path) => window.wetware.read(path) === "First part saved.", {}, PAGES);
+      // The disk fills. A second sentence, and Escape at once.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" Second part, typed as the disk filled.");
+      await t.page.keyboard.press("Escape");
+      // The room is still there, with the text in it, and says why in exactly these words.
+      await roomSays(STAYED);
+      assert.equal(await t.count(".room"), 1);
+      assert.equal(await t.count(".grid"), 0);
+      assert.equal((await t.room()).text, "First part saved. Second part, typed as the disk filled.");
+      assert.deepEqual((await t.room()).actions, ["Leave without saving"]);
+      assert.equal(await t.file(PAGES), "First part saved.");
+      await t.shot();
+      // Leave says the same, and so does Escape again. Nothing else is a way out.
+      await t.page.click(".room-leave");
+      await t.saved();
+      assert.equal(await t.count(".room"), 1);
+      assert.equal((await t.room()).said, STAYED);
+      // The same when it is the read inside the save that fails.
+      await t.page.evaluate((path) => {
+        window.wetware.failWrites(null);
+        window.wetware.failRead(path, "Operation timed out (os error 60)");
+      }, PAGES);
+      await t.page.keyboard.press("Escape");
+      await roomSays(STAYED.replace("No space left on device (os error 28)", "Operation timed out (os error 60)"));
+      assert.equal(await t.count(".room"), 1);
+      // The trouble passes: leaving saves what is there and goes, and nothing is left on the month's message line.
+      await t.page.evaluate((path) => window.wetware.failRead(path, null), PAGES);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.file(PAGES), "First part saved. Second part, typed as the disk filled.");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 10 of 750 words");
+      assert.equal(await t.problem(), null);
+
+      // The one way out with text that can't be saved: saying so. The file keeps what it had, and nothing more is said.
+      await t.openPages();
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" Let go.");
+      await t.page.keyboard.press("Escape");
+      await roomSays(STAYED);
+      const tried = await t.writes();
+      await t.page.evaluate(() => [...document.querySelectorAll(".room-action")].find((el) => el.textContent === "Leave without saving").click());
+      await t.ready();
+      await t.saved();
+      assert.equal(await t.file(PAGES), "First part saved. Second part, typed as the disk filled.");
+      assert.equal(await t.problem(), null);
+      assert.equal(await t.writes(), tried, "a save was tried after the text was let go");
+      assert.equal(await t.focused(), "morning_pages 2026-11-17");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+
+      // A save that is merely slow is waited for: the room stays up until it has landed, and then goes.
+      await t.page.evaluate((path) => window.wetware.slowWrite(path, 500), PAGES);
+      await t.openPages();
+      await t.page.keyboard.type(" Slow.");
+      await t.page.keyboard.press("Escape");
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+      assert.equal(await t.count(".room"), 1, "the room was left before its save had landed");
+      assert.equal(await t.file(PAGES), "First part saved. Second part, typed as the disk filled.");
+      await t.ready();
+      assert.equal(await t.file(PAGES), "First part saved. Second part, typed as the disk filled. Slow.");
+      assert.equal(await t.problem(), null);
+    },
+  },
+  {
+    name: "pages-count",
+    about: "the count follows the pages: text taken from the file, a stray key on the box, a count cleared by hand, and one handed back to the room from the day view",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const count = async (day = 17) => (await t.file(`days/2026-11-${day}.md`))?.match(/^morning_pages_words: .*$/m)?.[0] ?? null;
+      const source = async (day = 17) => (await t.file(`days/2026-11-${day}.md`))?.match(/^  morning_pages_words: .*$/m)?.[0].trim() ?? null;
+      const reads = () => t.page.evaluate(() => window.wetware.calls().filter((call) => call === "data_read").length);
+      const front = async () => {
+        const before = await reads();
+        await t.windowEvent("focus");
+        await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_read").length > n, {}, before);
+        await t.saved();
+      };
+      const key = (name) => t.page.keyboard.press(name);
+
+      // Pages written in another app, with no count anywhere: opened in the room and left, they are counted.
+      await t.page.evaluate((text) => window.wetware.write("pages/2026-11-13.md", text), prose(800));
+      assert.equal(await count(13), null);
+      await t.click("morning_pages", 13);
+      await t.page.waitForSelector(".room-field");
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 4", "800 / 750 words"]);
+      await key("Escape");
+      await t.ready();
+      assert.equal(await count(13), "morning_pages_words: 800");
+      assert.equal(await source(13), "morning_pages_words: morning_pages");
+      assert.equal(await t.label("morning_pages", 13), "Morning pages, Friday, November 13, 2026: 800 of 750 words, goal met");
+      assert.equal(await t.file("pages/2026-11-13.md"), prose(800));
+
+      // Taken when the window comes back to the front: the strip follows the file, and so does the count on leaving.
+      await t.openPages();
+      await t.page.keyboard.type("Five words written in here.");
+      await t.page.waitForFunction((path) => window.wetware.read(path) !== null, {}, PAGES);
+      await t.saved();
+      assert.equal(await count(), "morning_pages_words: 5");
+      await t.page.evaluate((path, text) => window.wetware.write(path, text), PAGES, prose(405));
+      await front();
+      assert.deepEqual((await t.room()).strip.slice(1, 3), ["page 2 of 3", "405 / 750 words"]);
+      await key("Escape");
+      await t.ready();
+      assert.equal(await count(), "morning_pages_words: 405");
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 405 of 750 words");
+      // "Take the file's text": the count follows that too. (Something is typed and saved first, so that the count
+      // is the room's own and up to date when the file changes under it.)
+      await t.openPages();
+      await t.page.keyboard.type(" Saved first.");
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith(" Saved first."), {}, PAGES);
+      await t.saved();
+      assert.equal(await count(), "morning_pages_words: 407");
+      await t.page.evaluate((path) => window.wetware.write(path, "Three words now."), PAGES);
+      await t.page.keyboard.type(" Typed over.");
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 2);
+      await t.page.evaluate(() => [...document.querySelectorAll(".room-action")].find((el) => el.textContent === "Take the file's text").click());
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 0);
+      await key("Escape");
+      await t.ready();
+      assert.equal(await count(), "morning_pages_words: 3");
+      assert.equal(await t.file(PAGES), "Three words now.");
+
+      // 760 words, and out. The keyboard is on the day's box, where the app puts it. A stray Backspace or Delete
+      // there does nothing to a count the room wrote.
+      await t.openPages();
+      await t.page.$eval(".room-field", (el) => el.select());
+      await t.insert(prose(760));
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "morning_pages 2026-11-17");
+      const counted = await t.file(TODAY_FILE);
+      assert.equal(await count(), "morning_pages_words: 760");
+      const written = await t.writes();
+      await key("Backspace");
+      await key("Delete");
+      await t.saved();
+      assert.equal(await t.file(TODAY_FILE), counted);
+      assert.equal(await t.writes(), written);
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 760 of 750 words, goal met");
+      assert.equal(await t.countText("morning_pages"), "10/30");
+      assert.equal(await t.problem(), null);
+
+      // A number typed on the box is a count by hand, and that one can be cleared. An empty count is nobody's:
+      // the room counts the day again the next time it is open, whatever the file says of who cleared it.
+      await t.page.keyboard.type("9");
+      await key("Enter");
+      await t.saved();
+      assert.equal(await count(), "morning_pages_words: 9");
+      assert.equal(await source(), "morning_pages_words: manual");
+      await key("Backspace");
+      await t.saved();
+      assert.equal(await count(), "morning_pages_words: null");
+      assert.equal(await source(), "morning_pages_words: manual");
+      assert.equal(await t.text(".pages-prompt"), "Morning pages0 / 750 words todayWrite");
+      await key("Enter");
+      await t.page.waitForSelector(".room-field");
+      // Nothing is said of a count set by hand: there is no count.
+      assert.equal((await t.room()).foot, "Kept in pages/2026-11-17.md and nowhere else. Only the word count goes to the day file.");
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.file(TODAY_FILE), counted);
+      assert.equal(await t.countText("morning_pages"), "10/30");
+
+      // A wrong number typed over the room's count stays, as any count by hand does. The day view says how many
+      // words the pages hold and offers to hand the count back to the room.
+      await t.page.keyboard.type("9");
+      await key("Enter");
+      await t.saved();
+      await t.openDay(17);
+      await t.page.waitForFunction(() => document.querySelector('.day .row[data-habit="morning_pages"] .action') !== null);
+      const row = await t.dayRow("morning_pages");
+      assert.equal(`${row.value} ${row.source} ${row.action}`, "9 manual Use the room's count");
+      assert.equal(row.note, "Set by hand, so the writing room leaves it alone. This day's pages hold 760 words. Use the room's count puts that here, and the room keeps it from then on.");
+      await t.shot();
+      await t.page.focus('.day .row[data-habit="morning_pages"] .action');
+      await key("Enter");
+      await t.saved();
+      assert.equal(await t.file(TODAY_FILE), counted);
+      const back = await t.dayRow("morning_pages");
+      assert.equal(`${back.value} ${back.source} ${back.action}`, "760 morning_pages null");
+      // The keyboard is on the value the action was about, not nowhere.
+      assert.equal(await t.focusedLabel(), "Morning pages, Tuesday, November 17, 2026");
+      await key("Escape");
+      await t.ready();
+
+      // A count by hand on a day with no pages has nothing to be handed back to: no action. The fixture's 16th.
+      await t.openDay(16);
+      await t.page.waitForSelector(".day .day-notes");
+      await t.saved();
+      assert.equal((await t.dayRow("morning_pages")).action, null);
+      assert.equal((await t.dayRow("morning_pages")).source, "unrecorded");
+      await key("Escape");
+      await t.ready();
+
+      // Pages emptied on a day whose file held nothing but their count: no stub of a day file is left behind,
+      // and no empty _sources in a file that holds more.
+      const paths = await t.paths();
+      assert.ok(!paths.includes("days/2026-11-09.md"));
+      await t.click("morning_pages", 9);
+      await t.page.waitForSelector(".room-field");
+      await t.page.keyboard.type("A few words on the ninth.");
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.file("days/2026-11-09.md"), "---\ndate: 2026-11-09\nmorning_pages_words: 6\n_sources:\n  morning_pages_words: morning_pages\n---\n");
+      await key("Enter");
+      await t.page.waitForSelector(".room-field");
+      await t.page.$eval(".room-field", (el) => el.select());
+      await key("Backspace");
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.file("days/2026-11-09.md"), null);
+      assert.deepEqual(await t.page.evaluate(() => window.wetware.removed()), ["days/2026-11-09.md"]);
+      assert.equal(await t.state("morning_pages", 9), "missed");
+      // A file that holds something of the user's and no source entry but the room's: written and emptied again, it
+      // is exactly as it was, with no "_sources:" left where the app put one.
+      const own = "---\ndate: 2026-11-09\n# kept by hand\ncaffeine_mg: 90\n---\n";
+      await t.page.evaluate((text) => window.wetware.write("days/2026-11-09.md", text), own);
+      await t.reload();
+      await t.click("morning_pages", 9);
+      await t.page.waitForSelector(".room-field");
+      await t.page.keyboard.type("Again.");
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.file("days/2026-11-09.md"), own.replace("---\n", "---\n").replace("caffeine_mg: 90\n", "caffeine_mg: 90\nmorning_pages_words: 1\n_sources:\n  morning_pages_words: morning_pages\n"));
+      await key("Enter");
+      await t.page.waitForSelector(".room-field");
+      await t.page.$eval(".room-field", (el) => el.select());
+      await key("Backspace");
+      await key("Escape");
+      await t.ready();
+      assert.equal(await t.file("days/2026-11-09.md"), own);
+      assert.deepEqual(await t.page.evaluate(() => window.wetware.removed()), ["days/2026-11-09.md"]);
+    },
+  },
+  {
+    name: "notes-slow",
+    about: "on a slow disk, a notes save asked for while one is on its way is not taken for a change made elsewhere",
+    async run(t) {
+      const path = "days/2026-11-10.md";
+      const before = await t.file(path);
+      await t.page.evaluate((file) => window.wetware.slowWrite(file, 400), path);
+      await t.openDay(10);
+      await t.notesEnd();
+      // The first save is on its way to disk, and has not landed. More is typed, and the window goes to the back.
+      await t.page.keyboard.type("One.");
+      await t.page.waitForFunction(() => window.wetware.calls().includes("data_write"));
+      assert.equal(await t.file(path), before);
+      await t.page.keyboard.type(" Two.");
+      await t.windowEvent("blur");
+      await t.page.waitForFunction((file, text) => window.wetware.read(file) === text, {}, path, `${before}One. Two.`);
+      await t.saved();
+      // Nothing was asked, and the day can be left.
+      assert.equal(await t.problem(), null);
+      assert.deepEqual(await t.dayTable("Notes"), []);
+
+      // The same with no blur at all, on a slower disk still: a sentence, a pause long enough for its save to start,
+      // another sentence, and a pause.
+      await t.page.evaluate((file) => window.wetware.slowWrite(file, 1000), path);
+      await t.notesEnd();
+      await t.page.keyboard.type(" Three.");
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 900)));
+      await t.page.keyboard.type(" Four.");
+      await t.page.waitForFunction((file, text) => window.wetware.read(file) === text, {}, path, `${before}One. Two. Three. Four.`);
+      await t.saved();
+      assert.equal(await t.problem(), null);
+      assert.deepEqual(await t.dayTable("Notes"), []);
+      assert.equal(await t.notes(), "Slept badly. Two coffees before ten.\nOne. Two. Three. Four.");
+      // And a change that really was made elsewhere is still asked about.
+      await t.page.evaluate((file) => {
+        window.wetware.slowWrite(file, null);
+        window.wetware.write(file, `${window.wetware.read(file)}\nFrom Obsidian.\n`);
+      }, path);
+      await t.page.keyboard.type(" Five.");
+      await t.told("were changed outside Wetware");
+      assert.equal((await t.dayTable("Notes")).length, 1);
+      await t.page.evaluate(() => [...document.querySelectorAll('.day .table[aria-label="Notes"] .action')].find((el) => el.textContent === "Take the file's text").click());
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.focused(), "day 2026-11-10");
+    },
+  },
+  {
+    name: "pages-stuck",
+    about: "a pages write that the folder is slow to answer is given up on; when it lands after all, it lands before the newer one and never over it",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      await t.openPages();
+      await t.page.keyboard.type("One. Two.");
+      await t.page.waitForFunction((path) => window.wetware.read(path) === "One. Two.", {}, PAGES);
+      // The next write of the pages takes 33 seconds to land: three more than the app waits for an answer.
+      await t.page.evaluate((path) => window.wetware.slowWrite(path, 33000), PAGES);
+      await t.page.keyboard.type(" Three.");
+      await t.page.waitForFunction(() => window.wetware.calls().filter((call) => call === "data_write").length >= 3);
+      await t.page.evaluate((path) => window.wetware.slowWrite(path, null), PAGES);
+      // A newer save is asked for behind it.
+      await t.page.keyboard.type(" Four.");
+      await t.windowEvent("blur");
+      // At thirty seconds the first is given up on, and the room says so, naming the file.
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent !== "", { timeout: 40000 });
+      assert.equal((await t.room()).said, "The pages for November 17 were not saved. No answer from the data folder for pages/2026-11-17.md after 30 seconds");
+      assert.equal(await t.file(PAGES), "One. Two.");
+      // Three seconds later the stuck write lands, and the newer one after it: the file holds the newer text, the day
+      // file its count, and the message has gone. Had the newer one landed first, the stuck one would have written over it.
+      await t.page.waitForFunction((path) => window.wetware.read(path) === "One. Two. Three. Four.", { timeout: 20000 }, PAGES);
+      await t.saved();
+      assert.equal((await t.room()).said, null);
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 4$/m);
+      assert.deepEqual(
+        (await t.page.evaluate(() => window.wetware.writes())).filter((write) => write.path === PAGES).length,
+        3,
+      );
+      // What the room knows the file to hold is what the newer save wrote: more typing is saved with nothing asked.
+      await t.page.keyboard.type(" Five.");
+      await t.page.waitForFunction((path) => window.wetware.read(path) === "One. Two. Three. Four. Five.", {}, PAGES);
+      await t.saved();
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).actions, []);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.label("morning_pages", 17), "Morning pages, Tuesday, November 17, 2026: 5 of 750 words");
+    },
+  },
+  {
+    name: "quit-flush",
+    about: "the shell holds a close and asks the app to save: what is typed in the room and in a day's notes is on disk by the time the app answers, and it always answers",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const flush = () => t.page.evaluate(() => window.wetware.askFlush());
+
+      // With nothing typed anywhere there is nothing to wait for.
+      const idle = await flush();
+      assert.ok(idle >= 0 && idle < 500, `with nothing to save, the answer took ${idle} ms`);
+      assert.equal(await t.writes(), 0);
+
+      // In the room, mid-sentence, with no pause for a save to have run: the close is asked for.
+      await t.openPages();
+      await t.page.keyboard.type("Typed just before quitting");
+      assert.equal(await t.file(PAGES), null);
+      const quick = await flush();
+      assert.ok(quick >= 0, "the app did not answer");
+      // By the time it answers, the text and its count are both on disk.
+      assert.equal(await t.file(PAGES), "Typed just before quitting");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 4$/m);
+      // On a slow disk it answers only once the write has landed, not before.
+      await t.page.evaluate((path) => {
+        window.wetware.slowWrite(path, 600);
+        window.wetware.slowWrite("days/2026-11-17.md", 300);
+      }, PAGES);
+      await t.page.keyboard.type(", and again");
+      const slow = await flush();
+      assert.ok(slow >= 850, `the answer came after ${slow} ms, before the writes could have landed`);
+      assert.equal(await t.file(PAGES), "Typed just before quitting, and again");
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 6$/m);
+      await t.page.evaluate((path) => {
+        window.wetware.slowWrite(path, null);
+        window.wetware.slowWrite("days/2026-11-17.md", null);
+      }, PAGES);
+      // A save that can't be made does not hold the close: the app still answers, and well inside the shell's limit.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(". Lost");
+      const failing = await flush();
+      assert.ok(failing >= 0 && failing < 1500, `with a failing disk the answer took ${failing} ms`);
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+
+      // A day's notes, the same.
+      await t.openDay(10);
+      const before = await t.file("days/2026-11-10.md");
+      await t.notesEnd();
+      await t.page.keyboard.type("Typed just before quitting");
+      assert.equal(await t.file("days/2026-11-10.md"), before);
+      assert.ok((await flush()) >= 0);
+      assert.equal(await t.file("days/2026-11-10.md"), `${before}Typed just before quitting`);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+    },
+  },
+  {
+    name: "pages-private",
+    about: "what is written in the room is in its pages file and nowhere else: no other file, no storage, no log, no message, nothing sent but the write itself",
+    query: "sync=fixture&key=stored",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      // A phrase that is nowhere in the app or its fixtures, and each of its parts on its own.
+      const MARKER = "quince-marmalade-7391 is under the floorboards";
+      const PARTS = [MARKER, "quince", "marmalade", "7391", "floorboards"];
+      const holds = (text) => t.page.waitForFunction((p, body) => (window.wetware.read(p) ?? "").includes(body), {}, PAGES, text);
+      const roomSays = (text) => t.page.waitForFunction((part) => document.querySelector(".room-notice").textContent.includes(part), {}, text);
+      await t.told("Sync: 24 days updated.");
+      for (const part of PARTS) assert.deepEqual(await t.page.evaluate((text) => window.wetware.filesHolding(text), part), [], `the fixture already holds "${part}"`);
+      /**
+       * Whatever hangs off the window that a script could have put there: every property but the harness's own
+       * and the browser's, looked through a few levels down for `text`. Returns the names of those that hold it.
+       */
+      const globalsHolding = (text) =>
+        t.page.evaluate((needle) => {
+          const holds = (value, depth) => {
+            if (typeof value === "string") return value.includes(needle);
+            if (value === null || typeof value !== "object" || depth === 0) return false;
+            if (value instanceof Node || value === window) return false;
+            try {
+              return (Array.isArray(value) ? value : Object.values(value)).some((inner) => holds(inner, depth - 1));
+            } catch {
+              return false;
+            }
+          };
+          const found = [];
+          for (const name of Object.getOwnPropertyNames(window)) {
+            if (name === "wetware" || name.startsWith("__TAURI") || name.startsWith("__vite") || name.startsWith("$Refresh") || name.startsWith("__REACT")) continue;
+            let value;
+            try {
+              value = window[name];
+            } catch {
+              continue;
+            }
+            if (holds(value, 4)) found.push(name);
+          }
+          return found;
+        }, text);
+
+      // Written, and saved the ordinary way.
+      await t.openPages();
+      await t.page.keyboard.type(`Nobody reads this. The ${MARKER}.`);
+      await holds(MARKER);
+      // A save that fails, with the phrase in the text it failed to save: what is said names the file, and quotes nothing.
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type(" More of the marmalade.");
+      await roomSays("were not saved");
+      assert.equal((await t.room()).said, "The pages for November 17 were not saved. No space left on device (os error 28)");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.type(" And the floorboards.");
+      await holds("And the floorboards.");
+      // The file changed in another app under unsaved typing: the question is put without a word of either text.
+      await t.page.evaluate((path) => window.wetware.write(path, `${window.wetware.read(path)} Quince, added elsewhere: quince-7391.`), PAGES);
+      await t.page.keyboard.type(" Typed over it: 7391.");
+      await roomSays("was changed outside Wetware");
+      assert.equal(
+        (await t.room()).said,
+        "pages/2026-11-17.md was changed outside Wetware while it was open here. What is typed here has not been saved. Choose whether to keep it or take the file's text.",
+      );
+      await t.page.keyboard.press("Escape");
+      assert.equal((await t.room()).said, "pages/2026-11-17.md is not saved: it was changed outside Wetware. Before leaving, choose whether to keep what is typed here or take the file's text.");
+      await t.page.evaluate(() => [...document.querySelectorAll(".room-action")].find((el) => el.textContent === "Keep what is typed here").click());
+      await holds("Typed over it: 7391.");
+      // The window to the back and to the front again, then out of the room.
+      await t.windowEvent("blur");
+      await t.windowEvent("focus");
+      await t.saved();
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.saved();
+      const written = await t.file(PAGES);
+      assert.equal(written, `Nobody reads this. The ${MARKER}. More of the marmalade. And the floorboards. Typed over it: 7391.`);
+
+      // Everything else the app does, with the pages written: a sync, the day's own view and its notes, Settings.
+      await t.page.click(".month .action");
+      await t.told("Sync:");
+      await t.openDay(17);
+      await t.page.focus(".day-notes");
+      await t.page.keyboard.type("Day notes are another thing.");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      await t.nav("Settings");
+      await t.page.waitForSelector('input[aria-label="Latitude"]');
+      await t.page.evaluate(() => [...document.querySelectorAll(".row .action")].find((el) => el.textContent === "Test connection").click());
+      await t.saved();
+      await t.nav("Month");
+      await t.ready();
+      await t.saved();
+
+      for (const part of PARTS) {
+        const where = `"${part}"`;
+        // In the pages file, and in no other file of this folder or any other the app has known.
+        assert.deepEqual(await t.page.evaluate((text) => window.wetware.filesHolding(text), part), [`suggested: ${PAGES}`], `${where} is in a file other than the pages`);
+        // Sent to the shell only as the write of that file, and handed back only by the read of it. Sync sent none of it.
+        assert.deepEqual([...new Set(await t.page.evaluate((text) => window.wetware.sent(text), part))], [`data_write ${PAGES}`], `${where} was sent somewhere`);
+        assert.deepEqual([...new Set(await t.page.evaluate((text) => window.wetware.answered(text), part))], [`data_read ${PAGES}`], `${where} was handed over`);
+        assert.ok(!(await t.page.evaluate(() => window.wetware.fetches())).join("\n").includes(part), `${where} is in a fetch`);
+        // Not in anything the page logged or asked the network for.
+        assert.ok(!t.said().includes(part), `${where} is in the console or a request`);
+        // Not in the browser's storage, which the app does not use at all.
+        const kept = await t.page.evaluate(async () => ({
+          local: JSON.stringify(Object.entries(localStorage)),
+          session: JSON.stringify(Object.entries(sessionStorage)),
+          cookie: document.cookie,
+          databases: JSON.stringify(await indexedDB.databases()),
+          name: window.name,
+          history: JSON.stringify(history.state),
+          address: location.href,
+        }));
+        assert.deepEqual(kept, { local: "[]", session: "[]", cookie: "", databases: "[]", name: "", history: "null", address: kept.address });
+        assert.ok(!kept.address.includes(part));
+        // Not hung on the window for some other script to find.
+        assert.deepEqual(await globalsHolding(part), [], `${where} is on the window`);
+        // And, out of the room, not anywhere in the page: not on the message line, not in a title or a label.
+        assert.ok(!(await t.page.evaluate(() => document.documentElement.outerHTML)).includes(part), `${where} is still in the page`);
+      }
+      // The count is the one thing that left: a number, in the day file.
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 20$/m);
+      // The message line holds what the sync had to say, and nothing of the room's: not on top, and not underneath
+      // when each message in turn is dismissed.
+      assert.equal(await t.problem(), "Sync: nothing new.");
+      for (let said = await t.problem(); said !== null; said = await t.problem()) {
+        for (const part of PARTS) assert.ok(!said.includes(part), `"${part}" is on the message line`);
+        await t.page.click(".notice-dismiss");
+      }
+    },
+  },
+  {
+    name: "pages-outside",
+    about: "a pages file changed in another app while the room is open: taken in when nothing is typed, asked about when something is, never written over unseen",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const outside = (text) => t.page.evaluate((path, body) => window.wetware.write(path, body), PAGES, text);
+      const reads = () => t.page.evaluate(() => window.wetware.calls().filter((call) => call === "data_read").length);
+      const front = async () => {
+        const before = await reads();
+        await t.windowEvent("focus");
+        await t.page.waitForFunction((n) => window.wetware.calls().filter((call) => call === "data_read").length > n, {}, before);
+        await t.saved();
+      };
+      const roomSays = (text) => t.page.waitForFunction((part) => document.querySelector(".room-notice").textContent.includes(part), {}, text);
+      const choose = (label) => t.page.evaluate((text) => [...document.querySelectorAll(".room-action")].find((el) => el.textContent === text).click(), label);
+      const ASKED = "pages/2026-11-17.md was changed outside Wetware while it was open here. What is typed here has not been saved. Choose whether to keep it or take the file's text.";
+      const HELD = "pages/2026-11-17.md is not saved: it was changed outside Wetware. Before leaving, choose whether to keep what is typed here or take the file's text.";
+
+      await outside("Written in the room this morning.\n");
+      await t.openPages();
+      assert.equal((await t.room()).text, "Written in the room this morning.\n");
+
+      // Changed outside with nothing typed here: coming back to the window, the room takes the new text. Nothing is said or written.
+      await outside("Written in the room this morning.\nA line from Obsidian.\n");
+      await front();
+      assert.equal((await t.room()).text, "Written in the room this morning.\nA line from Obsidian.\n");
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).actions, []);
+      assert.equal(await t.writes(), 0);
+
+      // Changed outside and not yet seen, and then typed over here: nothing is written, the typing stays, and the room asks.
+      const second = "Written in the room this morning.\nA line from Obsidian.\nAnother from Obsidian.\n";
+      await outside(second);
+      await t.page.keyboard.type("Typed here.");
+      await roomSays("was changed outside Wetware");
+      assert.equal((await t.room()).said, ASKED);
+      assert.deepEqual((await t.room()).actions, ["Keep what is typed here", "Take the file's text"]);
+      assert.equal(await t.file(PAGES), second);
+      assert.equal((await t.room()).text, "Written in the room this morning.\nA line from Obsidian.\nTyped here.");
+      assert.equal(await t.writes(), 0);
+      assert.equal(await t.count(".app, .nav, .notices"), 0);
+      await t.shot();
+      // Typing on, the window going to the back: still nothing is written, and no save is so much as tried.
+      const read = await reads();
+      await t.page.keyboard.type(" And more.");
+      await t.windowEvent("blur");
+      await t.page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1100)));
+      assert.equal(await t.file(PAGES), second);
+      assert.equal(await t.writes(), 0);
+      assert.equal(await reads(), read, "a save was tried while the question was open");
+      // The room can't be left while that stands, by Escape or by Leave, and each try says why.
+      await t.page.keyboard.press("Escape");
+      assert.equal(await t.count(".room"), 1);
+      assert.equal((await t.room()).said, HELD);
+      assert.equal(await t.focusedLabel(), "Keep what is typed here");
+      await t.page.click(".room-leave");
+      assert.equal(await t.count(".room"), 1);
+
+      // Answering needs the file read again. If it can't be, the question stays open and the room says so, in these words.
+      await t.page.evaluate((path) => window.wetware.failRead(path, "stream did not contain valid UTF-8"), PAGES);
+      await choose("Keep what is typed here");
+      await t.page.waitForFunction(() => document.querySelector(".room-notice").textContent.startsWith("What is typed here is still not saved"));
+      assert.equal((await t.room()).said, "What is typed here is still not saved: pages/2026-11-17.md could not be read. stream did not contain valid UTF-8");
+      assert.deepEqual((await t.room()).actions, ["Keep what is typed here", "Take the file's text"]);
+      assert.equal(await t.writes(), 0);
+      await t.page.evaluate((path) => window.wetware.failRead(path, null), PAGES);
+      await t.page.focus(".room-said button");
+
+      // "Take the file's text", from the keyboard: the room holds what the file holds, nothing was written, and the way out is open.
+      await t.page.keyboard.press("Tab");
+      assert.equal(await t.focusedLabel(), "Take the file's text");
+      await t.page.keyboard.press("Enter");
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 0);
+      assert.equal((await t.room()).text, second);
+      assert.equal((await t.room()).said, null);
+      assert.equal(await t.file(PAGES), second);
+      assert.equal(await t.writes(), 0);
+      // The keyboard is back in the text.
+      assert.equal(await t.page.evaluate(() => document.activeElement.className), "room-text room-field");
+
+      // The other choice. Asked the same way, "Keep what is typed here" writes it over the file's text, count and all.
+      const third = `${second}A third from Obsidian.\n`;
+      await outside(third);
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+      await t.page.keyboard.type("Mine.");
+      await roomSays("was changed outside Wetware");
+      assert.equal(await t.file(PAGES), third);
+      await choose("Keep what is typed here");
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("Mine."), {}, PAGES);
+      await t.saved();
+      assert.equal(await t.file(PAGES), `${second}Mine.`);
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).actions, []);
+      assert.match(await t.file(TODAY_FILE), /^morning_pages_words: 14$/m);
+      // And typing goes on being saved as usual.
+      await t.page.keyboard.type(" Still mine.");
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("Still mine."), {}, PAGES);
+
+      // The window comes back to the front over typing that is not saved yet, with the file changed meanwhile:
+      // the typing is not thrown away for the file's text. The room asks, and writes nothing.
+      const fifth = await t.file(PAGES);
+      await outside(`${fifth} From elsewhere.`);
+      await t.page.keyboard.type(" Not saved yet.");
+      await front();
+      await roomSays("was changed outside Wetware");
+      assert.ok((await t.room()).text.endsWith("Still mine. Not saved yet."), (await t.room()).text);
+      assert.equal(await t.file(PAGES), `${fifth} From elsewhere.`);
+      await choose("Take the file's text");
+      await t.page.waitForFunction(() => document.querySelectorAll(".room-said button").length === 0);
+      assert.equal((await t.room()).text, `${fifth} From elsewhere.`);
+      assert.equal(await t.file(PAGES), `${fifth} From elsewhere.`);
+      await t.page.$eval(".room-field", (el) => el.setSelectionRange(el.value.length, el.value.length));
+
+      // Asked, and then the other app puts the file back as it was: there is nothing left to ask, and the typing is saved.
+      const fourth = await t.file(PAGES);
+      await outside(`${fourth} Elsewhere.`);
+      await t.page.keyboard.type(" Here.");
+      await roomSays("was changed outside Wetware");
+      await outside(fourth);
+      await front();
+      await t.page.waitForFunction((path) => window.wetware.read(path).endsWith("From elsewhere. Here."), {}, PAGES);
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).actions, []);
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.problem(), null);
+    },
+  },
+  {
+    name: "pages-trouble",
+    about: "trouble in the room is said in the room, quietly: a save that fails, a count that can't be written, a file that can't be read",
+    async run(t) {
+      const PAGES = "pages/2026-11-17.md";
+      const roomSays = (text) => t.page.waitForFunction((part) => document.querySelector(".room-notice").textContent.includes(part), {}, text);
+
+      // A save that fails: said under the strip, in the room's own voice; the app's message line stays away.
+      await t.openPages();
+      await t.page.evaluate(() => window.wetware.failWrites("No space left on device (os error 28)"));
+      await t.page.keyboard.type("Nowhere to put this yet.");
+      await roomSays("were not saved");
+      assert.equal((await t.room()).said, "The pages for November 17 were not saved. No space left on device (os error 28)");
+      assert.deepEqual((await t.room()).actions, ["Dismiss"]);
+      assert.equal(await t.count(".app, .nav, .notices"), 0);
+      assert.equal((await t.room()).text, "Nowhere to put this yet.");
+      assert.equal(await t.file(PAGES), null);
+      // Nothing below the strip moved for it: the text starts where it did.
+      const top = () => t.page.$eval(".room-field", (el) => el.getBoundingClientRect().top + window.scrollY);
+      const withMessage = await top();
+      await t.shot();
+      // The next keystroke tries again, and once the text is saved the message is gone by itself.
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.type(" Now there is.");
+      await t.page.waitForFunction((path) => window.wetware.read(path) === "Nowhere to put this yet. Now there is.", {}, PAGES);
+      await t.saved();
+      assert.equal((await t.room()).said, null);
+      assert.deepEqual((await t.room()).actions, []);
+      assert.equal(await top(), withMessage);
+
+      // A message as long as an operating system can make one keeps to the two lines kept for it. The text below
+      // does not move, and the whole of the message is in its tooltip.
+      const long = `The folder said no (os error 5): ${"a very long reason from the operating system, ".repeat(12)}and that is all.`;
+      await t.page.evaluate((message) => window.wetware.failWrites(message), long);
+      await t.page.keyboard.type(" More.");
+      await roomSays("The folder said no");
+      assert.equal(await top(), withMessage);
+      const said = await t.page.$eval(".room-notice", (el) => ({ title: el.title, lines: el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight), cut: el.scrollHeight > el.clientHeight }));
+      assert.equal(said.title, `The pages for November 17 were not saved. ${long}`);
+      assert.ok(said.lines <= 2.05 && said.cut, `the message takes ${said.lines} lines`);
+      assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "horizontal scroll");
+      await t.shot("pages-trouble-long");
+      await t.page.evaluate(() => window.wetware.failWrites(null));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.file(PAGES), "Nowhere to put this yet. Now there is. More.");
+      assert.equal(await t.problem(), null);
+
+      // A day file that needs fixing by hand: the text is saved all the same, and the room says the count was not.
+      const broken = "---\ndate: 2026-11-12\nmood: 1\nmood: 2\n---\n";
+      await t.page.evaluate((text) => window.wetware.write("days/2026-11-12.md", text), broken);
+      await t.reload();
+      await t.click("morning_pages", 12);
+      await t.page.waitForSelector(".room-field");
+      await t.page.keyboard.type("Kept, uncounted.");
+      await roomSays("The pages are saved.");
+      assert.equal((await t.room()).said, "The pages are saved. The word count could not be written to days/2026-11-12.md. Frontmatter: Invalid YAML: Map keys must be unique (line 4).");
+      assert.equal(await t.file("pages/2026-11-12.md"), "Kept, uncounted.");
+      assert.equal(await t.file("days/2026-11-12.md"), broken);
+      // The day file put right while the room is open, and nothing more typed: the count is still owed, and leaving
+      // writes it. The month that comes back has it, and the message has gone.
+      await t.page.evaluate(() => window.wetware.write("days/2026-11-12.md", "---\ndate: 2026-11-12\nmood: 2\n---\n"));
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.label("morning_pages", 12), "Morning pages, Thursday, November 12, 2026: 2 of 750 words");
+      assert.match(await t.file("days/2026-11-12.md"), /^morning_pages_words: 2$/m);
+      assert.equal(await t.file("pages/2026-11-12.md"), "Kept, uncounted.");
+      assert.equal(await t.problem(), null);
+
+      // A pages file that can't be read: the room says which file and why, and offers nothing to type into, so nothing is written over it.
+      await t.page.evaluate(() => window.wetware.failRead("pages/2026-11-11.md", "stream did not contain valid UTF-8"));
+      const written = await t.writes();
+      await t.click("morning_pages", 11);
+      await t.page.waitForSelector(".room");
+      await roomSays("could not be read");
+      assert.equal((await t.room()).said, "pages/2026-11-11.md could not be read, so nothing can be written here. stream did not contain valid UTF-8");
+      assert.equal(await t.count(".room textarea, .room-sheet"), 0);
+      assert.deepEqual((await t.room()).strip, ["Wednesday, November 11", "", "", "Leave"]);
+      // It is the one thing the room has to show, so it can't be dismissed. It is gone with the room.
+      assert.deepEqual((await t.room()).actions, []);
+      await t.shot("pages-unreadable");
+      await t.page.keyboard.press("Escape");
+      await t.ready();
+      assert.equal(await t.writes(), written);
+      assert.equal(await t.focused(), "morning_pages 2026-11-11");
+      assert.equal(await t.problem(), null);
+    },
+  },
+  {
     name: "settings",
     about: "the Settings screen, and first run with no data folder",
     query: "folder=none",
@@ -2393,7 +3650,7 @@ const scenarios = [
 ];
 
 /** What a scenario gets to work with. */
-function tools(page, name, base) {
+function tools(page, name, base, said) {
   const cell = (habit, day) => `.grid-cell[data-habit="${habit}"][data-date$="-${String(day).padStart(2, "0")}"]`;
   const t = {
     page,
@@ -2507,6 +3764,28 @@ function tools(page, name, base) {
     /** Puts the caret at the end of the notes, ready to type. */
     notesEnd: () => page.$eval(".day-notes", (el) => (el.focus(), el.setSelectionRange(el.value.length, el.value.length))),
     focusedLabel: () => page.evaluate(() => document.activeElement.getAttribute("aria-label") ?? document.activeElement.textContent),
+    /** Puts the keyboard on a box of the grid without pressing it. */
+    focusCell: (habit, day) => page.focus(cell(habit, day)),
+    /** Opens today's morning pages from the navigation, and waits for the writing room to have read them. */
+    openPages: async () => {
+      await t.nav("Pages");
+      await page.waitForSelector(".room-field");
+      await page.evaluate(() => document.fonts.ready);
+    },
+    /** What the writing room shows: its text, the strip above it, what it has to say and offers, its foot, its page marks. */
+    room: () =>
+      page.evaluate(() => ({
+        text: document.querySelector(".room-field")?.value ?? null,
+        strip: [...document.querySelectorAll(".room-strip > *")].map((el) => el.textContent.trim()),
+        said: document.querySelector(".room-notice").textContent || null,
+        actions: [...document.querySelectorAll(".room-said button")].map((el) => el.textContent),
+        foot: document.querySelector(".room-foot")?.textContent ?? null,
+        marks: [...document.querySelectorAll(".room-mark")].map((el) => Number(el.textContent)),
+      })),
+    /** Puts a long text in at the caret in one go, as a paste does. */
+    insert: (text) => page.keyboard.sendCharacter(text),
+    /** Everything the page has written to the console, and every request it has made, as one text. */
+    said: () => said.join("\n"),
     /** Everything in the open folder, to check that nothing changed. */
     folder: () => page.evaluate(() => window.wetware.paths().map((path) => [path, window.wetware.read(path)])),
     writes: () => page.evaluate(() => window.wetware.calls().filter((call) => call === "data_write").length),
@@ -2548,16 +3827,23 @@ for (const scenario of chosen) {
   const page = await browser.newPage();
   await page.setViewport({ ...(scenario.size ?? WIDE), deviceScaleFactor: 2 });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`uncaught: ${e.message}`));
+  /** Everything the page logs, of any kind, and everything it asks the network for: for checking that a text is in none of it. */
+  const said = [];
+  page.on("pageerror", (e) => {
+    errors.push(`uncaught: ${e.message}`);
+    said.push(`${e.message}\n${e.stack ?? ""}`);
+  });
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    said.push(message.text());
   });
   // The webview makes no network calls: everything it loads comes from the app itself.
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.protocol !== "data:" && url.host !== new URL(base).host) errors.push(`network: ${request.url()}`);
+    said.push(`${request.url()}\n${request.postData() ?? ""}`);
   });
-  const t = tools(page, scenario.name, base);
+  const t = tools(page, scenario.name, base, said);
   try {
     await page.goto(`${base}?today=2026-11-17&${scenario.query ?? ""}`);
     if (!scenario.query?.includes("folder=none")) await t.ready();

@@ -49,6 +49,11 @@ export interface DayPatch {
   body?: string;
   /** Edited notes: the counterpart of `Day.notes`. Use this or `body`, not both. */
   notes?: string;
+  /**
+   * If this patch takes the last entry out of `_sources`, take `_sources`
+   * out with it, so that no empty `_sources:` is left where the app put one.
+   */
+  tidy?: boolean;
 }
 
 /** The day file exists but can't be written without risking what's in it. */
@@ -291,11 +296,23 @@ export function updateDayFile(raw: string | null, date: string, patch: DayPatch)
     if (patch.values && TAGS_KEY in patch.values) throw new TypeError("Patch a day's tags or values.tags, not both");
     ops.push(...tagOps(data[TAGS_KEY], patch.tags));
   }
-  for (const [key, source] of Object.entries(patch.sources ?? {})) {
-    if (source === undefined) ops.push({ op: "delete", path: ["_sources", key] });
-    // A `_sources` that is missing, empty or a plain value is replaced by a map.
-    // One that is a list written out over lines is refused instead.
-    else ops.push({ op: "set", path: ["_sources", key], value: source, before: ["_synced_at"] });
+  const sourceEdits = Object.entries(patch.sources ?? {});
+  const recorded = isDict(data._sources) ? Object.keys(data._sources) : [];
+  const emptied =
+    patch.tidy === true &&
+    recorded.length > 0 &&
+    sourceEdits.every(([, source]) => source === undefined) &&
+    recorded.every((key) => sourceEdits.some(([gone]) => gone === key));
+  if (emptied) {
+    // Every entry there is goes: the map goes with them.
+    ops.push({ op: "delete", path: ["_sources"] });
+  } else {
+    for (const [key, source] of sourceEdits) {
+      if (source === undefined) ops.push({ op: "delete", path: ["_sources", key] });
+      // A `_sources` that is missing, empty or a plain value is replaced by a map.
+      // One that is a list written out over lines is refused instead.
+      else ops.push({ op: "set", path: ["_sources", key], value: source, before: ["_synced_at"] });
+    }
   }
   if (patch.syncedAt !== undefined) ops.push({ op: "set", path: ["_synced_at"], value: patch.syncedAt });
 
@@ -343,16 +360,63 @@ export class NotesChangedError extends Error {
 }
 
 /**
- * Writes a day's notes, but only over the notes they were written from.
- * `from` is the text the edit started with. If the file's notes are anything
+ * The notes a day's file is known to hold: what the notes field last read
+ * from it, or last wrote to it. Every save is checked against it, and moves
+ * it on.
+ */
+export interface NotesBase {
+  text: string;
+}
+
+/**
+ * Writes a day's notes, but only over notes the field has seen. `base` holds
+ * what the file was last known to hold. If the file's notes are anything
  * else when this write's turn comes, nothing is written and it rejects with
  * `NotesChangedError`, which carries the day as it now is: the app never
  * writes over a body it hasn't shown.
+ *
+ * A save that lands moves `base` on to what it wrote, there and then, inside
+ * its turn. So a second save asked for while the first is still on its way
+ * to disk is checked against the first one's text when its own turn comes,
+ * and is not taken for a change made somewhere else. Notes that are already
+ * what the file holds are known to be there without being written.
  */
-export function writeNotes(fs: DataFs, date: string, notes: string, from: string): Promise<Day> {
-  return writeDay(fs, date, (day) => {
-    if (day.notes !== from) throw new NotesChangedError(day);
-    return { notes };
+export function writeNotes(fs: DataFs, date: string, notes: string, base: NotesBase): Promise<Day> {
+  const path = dayPath(date);
+  return inTurn(fs, path, async (turn) => {
+    const raw = await fs.read(path);
+    const day = parseDay(raw, date);
+    // Given up on while the file was being read: later saves are running, and this one writes nothing.
+    if (!turn.live()) return day;
+    if (day.notes === notes) {
+      base.text = notes;
+      return day;
+    }
+    if (day.notes !== base.text) throw new NotesChangedError(day);
+    const next = updateDayFile(raw, date, { notes });
+    if (next !== (raw ?? "")) await fs.write(path, next);
+    // A write that only landed after it was given up on is not the latest thing known: a later save may have landed since.
+    if (turn.live()) base.text = notes;
+    return parseDay(next, date);
+  });
+}
+
+/**
+ * A day file that holds its own date and nothing else, as the app writes
+ * one: it says nothing its name doesn't.
+ */
+const stubOf = (date: string) => `---\ndate: ${date}\n---\n`;
+
+/**
+ * Takes a day's file away if all it holds is its date: what is left when
+ * the one thing the app had written there is taken out again. Anything
+ * else in it (another key, a comment, a word of notes) and it stays.
+ */
+export function dropStubDay(fs: DataFs, date: string): Promise<void> {
+  const path = dayPath(date);
+  return inTurn(fs, path, async (turn) => {
+    const raw = await fs.read(path);
+    if (raw !== null && raw === stubOf(date) && turn.live()) await fs.remove(path, raw);
   });
 }
 
@@ -371,8 +435,10 @@ export type DayChange = DayPatch | ((day: Day) => DayPatch | null);
  */
 export function writeDay(fs: DataFs, date: string, change: DayChange): Promise<Day> {
   const path = dayPath(date);
-  return inTurn(fs, path, async () => {
+  return inTurn(fs, path, async (turn) => {
     const raw = await fs.read(path);
+    // Given up on while the file was being read: later changes are running, and this one writes nothing.
+    if (!turn.live()) return parseDay(raw, date);
     const patch = typeof change === "function" ? change(parseDay(raw, date)) : change;
     if (patch === null) return parseDay(raw, date);
     const next = updateDayFile(raw, date, patch);

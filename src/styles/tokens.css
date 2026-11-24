@@ -71,6 +71,25 @@
   --day-box: 1.125rem; /* the box of a check or tag habit: as tall as a line of body text */
   --day-box-inset: 0.1875rem; /* space around the mark inside it */
 
+  /* ── Writing room: the one quieter place. Softer ink on softer paper, and still no colour. ── */
+  --room-paper: #f4f4f4;
+  --room-ink: #262626;
+  --room-quiet: #767676; /* the date, the count, page numbers, what the room has to say */
+  --room-rule: #c4c4c4; /* the hairline where a page begins */
+  --room-font: var(--font-mono); /* the writing itself */
+  --room-weight: var(--weight-mono);
+  --room-size: 0.9375rem;
+  --room-leading: 1.75;
+  --room-tracking: var(--tracking-mono);
+  --room-measure: 38rem; /* width of the column of text */
+  --room-margin: 4.5rem; /* the margin beside it, where pages are numbered */
+  --room-mark: 2.5rem; /* length of the hairline under a page number */
+  --room-said: 2; /* lines kept under the strip for what the room has to say, so the text never moves for it */
+  --room-top: var(--space-12); /* between the strip and the first line */
+  --room-clear: var(--space-16); /* kept clear under the line being written */
+  --room-unit: 1px; /* what a page mark's place, measured against the text as it is set, is counted in */
+  --room-foot: 40vh; /* empty paper under the last line */
+
   /* ── Rules ── */
   --rule-weight: 1px;
   --rule: var(--rule-weight) solid var(--color-rule);

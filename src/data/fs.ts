@@ -10,6 +10,12 @@ export interface DataFs {
   write(path: string, text: string): Promise<void>;
   /** File names (not paths) directly inside `dir`. Empty if it doesn't exist. */
   list(dir: string): Promise<string[]>;
+  /**
+   * Takes a file away, but only if it holds exactly `expected`: the app
+   * never removes what it hasn't just read. A file that isn't there is
+   * already gone. Rejects, removing nothing, if it holds anything else.
+   */
+  remove(path: string, expected: string): Promise<void>;
 }
 
 /**
@@ -35,6 +41,11 @@ export function memoryFs(initial: Record<string, string> = {}): DataFs & {
     },
     async write(path, text) {
       files.set(path, text);
+    },
+    async remove(path, expected) {
+      if (!files.has(path)) return;
+      if (files.get(path) !== expected) throw new Error(`${path} has changed, so it was not removed`);
+      files.delete(path);
     },
     async list(dir) {
       const prefix = dir.replace(/\/$/, "") + "/";
