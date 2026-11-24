@@ -416,10 +416,10 @@ pub fn run() {
         .expect("error while running tauri application")
         // The app asked to quit is held the same way, then exits.
         .run(|app, event| {
-            if let RunEvent::ExitRequested { api, code, .. } = event {
-                if hold_close(app, move |app| app.exit(code.unwrap_or(0))) {
-                    api.prevent_exit();
-                }
+            if let RunEvent::ExitRequested { api, code, .. } = event
+                && hold_close(app, move |app| app.exit(code.unwrap_or(0)))
+            {
+                api.prevent_exit();
             }
         });
 }
