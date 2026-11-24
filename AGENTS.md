@@ -16,11 +16,11 @@ You're building **Wetware**, a local-first macOS habit tracker. Read [`SPEC.md`]
 
 Work through SPEC §11 in order. Each milestone should leave the app runnable.
 
-**Current state:** Milestones 1–5 are built and merged into `main`. Next is **M6: dot calendar, monthly counts, and the monthly roll-up file** (SPEC §6.3, §8.3). The M1/M2 notes below are kept for context.
+**Current state:** Milestones 1–5 are built and merged into `main`. Read [`docs/how-it-works.md`](docs/how-it-works.md) for how the app behaves today, and keep it current as you build. The README is the product overview: update its Status table when a milestone lands, but put behavior details, edge cases and caveats in `docs/how-it-works.md`, not the README. Next is **M6: dot calendar, monthly counts, and the monthly roll-up file** (SPEC §6.3, §8.3). The M1/M2 notes below are kept for context.
 
 ### Milestone 1: Skeleton (do this first)
 
-1. Scaffold Tauri 2 + React + TS + Vite at the repo root (`npm create tauri-app@latest`, React/TS template). If Rust isn't installed, install it with `rustup`. If Tauri fights you, Electron is allowed; record the decision in the README.
+1. Scaffold Tauri 2 + React + TS + Vite at the repo root (`npm create tauri-app@latest`, React/TS template). If Rust isn't installed, install it with `rustup`. If Tauri fights you, Electron is allowed; record the decision in `docs/how-it-works.md`.
 2. **Token layer first.** Create `src/styles/tokens.css` (or `tokens.ts`) to hold every color, font, size, spacing, and rule weight. Components must not contain raw hex values or pixel sizes. Brian is a brand designer and will restyle by editing this one file.
    - Fonts: Inter Tight (bold, tight tracking, leading ~0.95–1.0) for the grotesk, and JetBrains Mono or IBM Plex Mono for metadata. Self-host them; no Google Fonts CDN.
    - Grayscale: black, white, one or two grays, and 1px black hairlines. No radius, shadows, or cards. Habit dot colors are the only color in the app.
