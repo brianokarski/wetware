@@ -1,0 +1,233 @@
+/* Layout and primitives. No raw colors or sizes here: tokens.css only. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-grotesk);
+  font-weight: var(--weight-grotesk);
+  font-size: var(--size-body);
+  line-height: var(--leading-body);
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+}
+
+:focus-visible {
+  outline: var(--focus-weight) solid var(--color-ink);
+  outline-offset: var(--focus-weight);
+}
+
+/* ── Type primitives ── */
+
+.display {
+  font-size: var(--size-display);
+  line-height: var(--leading-display);
+  letter-spacing: var(--tracking-display);
+}
+
+.headline {
+  font-size: var(--size-headline);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-headline);
+}
+
+.title {
+  font-size: var(--size-title);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-headline);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-mono);
+  font-size: var(--size-mono);
+  line-height: var(--leading-mono);
+  letter-spacing: var(--tracking-mono);
+}
+
+.muted {
+  color: var(--color-gray);
+}
+
+/* ── App frame ── */
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: var(--page-margin);
+  gap: var(--space-12);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+/* Mono metadata row, like the "NR 17 / Spring Summer / 2023" strip. */
+.meta-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--col-gutter);
+  padding-top: var(--space-1);
+  border-top: var(--rule);
+}
+
+.meta-row > :last-child {
+  text-align: right;
+}
+
+/* Navigation: a typographic list. Active black, the rest gray. */
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-4);
+}
+
+.nav-item {
+  cursor: pointer;
+  color: var(--color-gray);
+}
+
+.nav-item[aria-current="page"],
+.nav-item:hover {
+  color: var(--color-ink);
+}
+
+.nav-item:disabled {
+  cursor: default;
+  color: var(--color-gray-light);
+}
+
+/* ── Hairline key/value table ── */
+
+.table {
+  max-width: var(--measure);
+  border-bottom: var(--rule);
+}
+
+.table-head {
+  padding-bottom: var(--space-2);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: var(--col-label) 1fr;
+  column-gap: var(--col-gutter);
+  align-items: baseline;
+  padding-block: var(--row-pad);
+  border-top: var(--rule);
+}
+
+.row-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+  min-width: 0;
+}
+
+.row-value > .grow {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-note {
+  flex-basis: 100%;
+}
+
+/* Habit list: name, then mono metadata columns. */
+.row-habit {
+  grid-template-columns: var(--col-label) repeat(3, 1fr);
+}
+
+/* ── Controls: text only, underlined by the row rule ── */
+
+.field {
+  flex: 1;
+  min-width: 0;
+  user-select: text;
+  cursor: text;
+}
+
+.field-short {
+  flex: 0 0 var(--space-24);
+  width: var(--space-24);
+}
+
+.field::placeholder {
+  color: var(--color-gray);
+}
+
+.field:focus-visible {
+  outline: none;
+  background: var(--color-gray-light);
+}
+
+.action {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: var(--rule-weight);
+  text-underline-offset: var(--space-1);
+}
+
+.action:hover {
+  color: var(--color-gray);
+}
+
+.action:disabled {
+  cursor: default;
+  color: var(--color-gray-light);
+}
+
+.choice {
+  cursor: pointer;
+  color: var(--color-gray);
+}
+
+.choice[aria-pressed="true"],
+.choice:hover {
+  color: var(--color-ink);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.selectable {
+  user-select: text;
+}
