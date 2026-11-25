@@ -37,7 +37,7 @@ A desktop habit tracker modeled on a **bullet journal monthly spread**: habits l
 | 6 | Morning pages writing room | ✅ |
 | 7 | Dot calendar view + monthly counts | ✅ |
 | 8 | Local markdown storage (Obsidian-compatible) | ✅ |
-| 9 | Graphs screen | ⏭ v2 |
+| 9 | Graphs and analysis | ⏭ after v1 (M10, see `docs/roadmap.md`) |
 | 10 | AI analysis | ⏭ v2 |
 | 11 | More background sources (calendar load, screen time, air quality, daylight) | ⏭ v2 |
 | 12 | iPhone app | ⏭ later |
@@ -250,7 +250,7 @@ Calendar load (event count/hours), macOS Screen Time, air quality, daylight hour
 
 **Reference: [`design/reference.png`](design/reference.png)** — match this direction. Brian is a brand designer and owns the visual language; build everything on a token layer (color, type, spacing in one place) so he can restyle fast.
 
-> This reference is the **interim** direction for M1–M7. The app gets a full redesign and branding exploration in **M8**, once it works end to end. Until then, keep every visual decision in the token layer and don't sink time into visual polish that M8 will replace.
+> This reference is the **interim** direction until **M11**, when the app gets a full redesign and branding exploration. Until then, keep every visual decision in the token layer and don't sink time into visual polish that M11 will replace.
 
 What to take from the reference:
 - **Swiss / International Typographic Style.** Strict flush-left grid, no decoration, no cards, no shadows, no rounded corners.
@@ -268,7 +268,7 @@ Use free stand-ins until Brian picks licensed fonts: e.g. Inter Tight / Inter Di
 
 ## 9. v2 notes (for context only — don't build)
 
-- **Graphs:** intervals.icu-style. Pick any habits (multi-select) and plot them on a shared timeline. Default charts for standard habits; user can save custom combinations.
+- **Graphs:** now planned as M10, Analysis. The full scope is in [`docs/roadmap.md`](docs/roadmap.md#m10-analysis).
 - **AI analysis:** ask "why did I feel off last week?" or get an automatic weekly review. Context = day files (values + notes) and the monthly roll-up. **Never morning pages text.** Show the user exactly what is sent. Likely bring-your-own-key.
 - **Product path:** replace intervals.icu with Garmin Connect Developer Program, an aggregator (e.g. Terra), and/or Apple HealthKit via an iPhone app (HealthKit keeps data on device, which fits principle 3).
 
@@ -288,8 +288,13 @@ Use free stand-ins until Brian picks licensed fonts: e.g. Inter Tight / Inter Di
 4. **Day panel + notes.**
 5. **Morning pages room.**
 6. **Dot calendar + monthly counts + monthly roll-up file.**
-7. **Polish:** keyboard nav, token layer, README with setup steps.
-8. **Redesign + branding:** once the v1 acceptance criteria (§12) pass. A branding exploration (name, identity, typography, color, the feel of the grid, calendar and writing room) led by Brian, then a full visual redesign built on the token layer and, where needed, component changes. Settles open question 1 (final name).
+7. **Live with it:** connect the real intervals.icu account, confirm sync against real data, fix what breaks, write setup steps, then 2–3 weeks of daily use with a friction log.
+8. **Interaction design:** an as-built inventory of how the app behaves now, then Brian designs how the whole app should behave, written up as `docs/interactions.md`.
+9. **Build to the interaction design:** rework the screens to match, build the habit editor (§8.5), and do the keyboard and token passes. v1 is done when §12 passes at the end of M9.
+10. **Analysis:** graphs and data exploration. Stacked timelines, any field against any other, derived series, a chart builder, scatter and offset views, and a "what moves together" finder.
+11. **Redesign + branding:** a branding exploration (name, identity, typography, color) led by Brian, then a full visual redesign on the token layer. Settles open question 1 (final name).
+
+Why this order, and what each milestone contains: [`docs/roadmap.md`](docs/roadmap.md).
 
 ## 12. Acceptance criteria (v1 done when)
 
