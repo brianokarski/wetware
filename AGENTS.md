@@ -38,6 +38,7 @@ Work through SPEC §11 in order. Each milestone should leave the app runnable.
 - **M2 Grid:** build this as a typographic table, not a widget (see reference: hairline-ruled key/value table). Click or Enter toggles and edits, arrow keys move between cells. Apply all five cell states from §5.3.
 - **M3 Sync:** before hard-coding any activity type strings, **inspect real intervals.icu data** (`GET /athlete/0/activities`) and log the distinct `type` values. Verify Open-Meteo endpoint shapes against its current docs.
 - **M4–M7:** follow the spec.
+- **M8 Redesign + branding:** starts only once SPEC §12 passes. Brian leads the branding exploration; your job is to make the redesign cheap. Until then, keep every visual decision in the token layer and don't spend time on visual polish that M8 will replace.
 
 ## Suggested layout
 
@@ -66,7 +67,7 @@ From SPEC §10. Items 3–5 need answers before the milestone noted next to them
 
 | # | Question | Blocks | Proposed default (not yet confirmed) |
 |---|----------|--------|-------------------------------------|
-| 1 | Final app name | public release only | keep "Wetware" |
+| 1 | Final app name | M8 (branding) | keep "Wetware" until M8 |
 | 2 | Day notes OK to send to AI in v2? | v2 only | yes for notes, never morning pages |
 | 3 | intervals.icu activity types for Lift and Climb | M3 | read them from real data |
 | 4 | Weight: manual only, or sync if intervals ever has it? | M3 | manual, sync if a value appears |

@@ -4,7 +4,7 @@ A macOS habit tracker laid out like a bullet-journal monthly spread. Your habits
 
 No streaks. No cloud. No accounts. Your data lives in plain markdown files in a folder you choose, and they open cleanly in Obsidian.
 
-> Working title. v1 is a personal tool for one person on one Mac.
+> Working title, and the current look is temporary. The name and design get a full branding pass once the app works end to end (M8). v1 is a personal tool for one person on one Mac.
 
 ## The idea
 
@@ -51,6 +51,7 @@ The other idea is that logging should cost almost nothing. A watch already recor
 | M5 | Morning pages | The writing room | ✅ |
 | M6 | Calendar and monthly summary | Dot calendar, counts, `months/` file | next |
 | M7 | Polish | Finishing touches, setup guide | planned |
+| M8 | Redesign + branding | Name, identity, and a full visual redesign | planned |
 
 Not scheduled yet: a **habit editor** (SPEC §8.5). Until then, habits are edited in `habits.yaml`.
 
