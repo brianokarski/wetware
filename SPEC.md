@@ -7,7 +7,7 @@
 Working title: **Wetware** (placeholder name — may change before any public release)
 Owner: Brian
 Status: planning complete for v1, ready to build
-Last updated: 2026-11-17
+Last updated: 2026-11-23
 
 ---
 
@@ -250,6 +250,8 @@ Calendar load (event count/hours), macOS Screen Time, air quality, daylight hour
 
 **Reference: [`design/reference.png`](design/reference.png)** — match this direction. Brian is a brand designer and owns the visual language; build everything on a token layer (color, type, spacing in one place) so he can restyle fast.
 
+> This reference is the **interim** direction for M1–M7. The app gets a full redesign and branding exploration in **M8**, once it works end to end. Until then, keep every visual decision in the token layer and don't sink time into visual polish that M8 will replace.
+
 What to take from the reference:
 - **Swiss / International Typographic Style.** Strict flush-left grid, no decoration, no cards, no shadows, no rounded corners.
 - **Two type voices only:**
@@ -287,6 +289,7 @@ Use free stand-ins until Brian picks licensed fonts: e.g. Inter Tight / Inter Di
 5. **Morning pages room.**
 6. **Dot calendar + monthly counts + monthly roll-up file.**
 7. **Polish:** keyboard nav, token layer, README with setup steps.
+8. **Redesign + branding:** once the v1 acceptance criteria (§12) pass. A branding exploration (name, identity, typography, color, the feel of the grid, calendar and writing room) led by Brian, then a full visual redesign built on the token layer and, where needed, component changes. Settles open question 1 (final name).
 
 ## 12. Acceptance criteria (v1 done when)
 
