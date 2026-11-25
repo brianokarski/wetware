@@ -9,6 +9,15 @@ Developer reference: how the app behaves at its edges, how it's put together, an
 - Secrets: macOS Keychain (`keyring` crate).
 - Data sources: intervals.icu (activities + wellness), Open-Meteo (weather). The Rust shell makes every network call (`ureq`); the webview has no network access.
 
+## Design file
+
+A Figma file ("Wetware") holds the app as built through M5, as tokens, components and screens, so the design can be iterated on while the app is built.
+
+- Figma variables mirror `src/styles/tokens.css` one to one: `color/ink` is `--color-ink`, `size/display` is `--size-display`, and so on. Each variable's Web code syntax holds its CSS name.
+- When a token is added, renamed or removed in `tokens.css`, make the same change in Figma, and the other way round. A value Brian changes in Figma is applied by copying it into `tokens.css`.
+- Habit dot colors are a `Habit` collection in Figma; in the app they live in `habits.yaml`.
+- The screens in Figma are compositions, not a spec. Where the app and the file disagree, ask which one is meant.
+
 ## Running the checks
 
 ```sh

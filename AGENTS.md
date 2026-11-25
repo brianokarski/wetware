@@ -39,6 +39,7 @@ Work through SPEC §11 in order. Each milestone should leave the app runnable.
 - **M3 Sync:** before hard-coding any activity type strings, **inspect real intervals.icu data** (`GET /athlete/0/activities`) and log the distinct `type` values. Verify Open-Meteo endpoint shapes against its current docs.
 - **M6 onward:** read [`docs/roadmap.md`](docs/roadmap.md) for the scope and the reasons behind the order.
 - **M7–M8 are led by Brian.** In M7 you fix bugs he finds in daily use but don't redesign anything. In M8 you write the as-built interaction inventory, and Brian designs from it.
+- **Tokens have a twin in Figma.** Keep `src/styles/tokens.css` and the Figma variables named the same (see `docs/how-it-works.md`, Design file).
 - **Visuals wait for M11.** Keep every visual decision in the token layer, and don't spend time on visual polish that the redesign will replace.
 
 ## Suggested layout
