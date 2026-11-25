@@ -4,7 +4,7 @@ A macOS habit tracker laid out like a bullet-journal monthly spread. Your habits
 
 No streaks. No cloud. No accounts. Your data lives in plain markdown files in a folder you choose, and they open cleanly in Obsidian.
 
-> Working title, and the current look is temporary. The name and design get a full branding pass once the app works end to end (M8). v1 is a personal tool for one person on one Mac.
+> Working title, and the current look is temporary. The name and design get a full branding pass once the app works end to end (M11). v1 is a personal tool for one person on one Mac.
 
 ## The idea
 
@@ -18,6 +18,7 @@ The other idea is that logging should cost almost nothing. A watch already recor
 - **A day.** Everything about one day: each value and where it came from (your watch, the weather, or you), plus free-form notes.
 - **Morning pages.** A full-window writing room with nothing else on screen. Three pages (750 words) is the goal. The writing stays in its own private file; only the word count goes anywhere else.
 - **Calendar** *(coming next)*. A month calendar with a colored dot sticker on each day you did a habit.
+- **Analysis** *(planned)*. Put any piece of data against any other (sleep, mood, HRV, training, weather, habits) to find patterns you wouldn't have noticed.
 - **Settings.** Your data folder, intervals.icu key, weather location, units and morning pages goal.
 
 ## What it promises
@@ -50,10 +51,15 @@ The other idea is that logging should cost almost nothing. A watch already recor
 | M4 | Day view | One day in full, with notes | ✅ |
 | M5 | Morning pages | The writing room | ✅ |
 | M6 | Calendar and monthly summary | Dot calendar, counts, `months/` file | next |
-| M7 | Polish | Finishing touches, setup guide | planned |
-| M8 | Redesign + branding | Name, identity, and a full visual redesign | planned |
+| M7 | Live with it | Real data, daily use, a friction log | planned |
+| M8 | Interaction design | How the whole app behaves, designed as a whole | planned |
+| M9 | Build to the design | Screens reworked, habit editor | planned |
+| M10 | Analysis | Put any piece of data against any other | planned |
+| M11 | Redesign + branding | Name, identity, and the final look | planned |
 
-Not scheduled yet: a **habit editor** (SPEC §8.5). Until then, habits are edited in `habits.yaml`.
+Why it's in this order, and what each milestone holds: [`docs/roadmap.md`](docs/roadmap.md).
+
+Until the habit editor lands (M9), habits are edited in `habits.yaml`.
 
 Sync hasn't been tried against a real intervals.icu account yet.
 
@@ -73,6 +79,7 @@ Built with Tauri 2, React and TypeScript.
 | File | For |
 |------|-----|
 | [`SPEC.md`](SPEC.md) | The full product spec. Source of truth. |
+| [`docs/roadmap.md`](docs/roadmap.md) | What comes next and why, milestone by milestone |
 | [`docs/how-it-works.md`](docs/how-it-works.md) | Developer reference: tests, code layout, edge-case behavior, sync rules, what's unconfirmed |
 | [`AGENTS.md`](AGENTS.md) | Rules and workflow for coding agents |
 | [`design/reference.png`](design/reference.png) | Visual direction (Swiss / International Typographic Style) |
